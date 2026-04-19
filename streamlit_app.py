@@ -1,6 +1,6 @@
 """
 Streamlit Dashboard for EVT Tail Risk Results.
-Professional layout with dark mode support.
+Displays current tail risk metrics and historical trends.
 """
 
 import streamlit as st
@@ -10,7 +10,7 @@ from plotly.subplots import make_subplots
 from huggingface_hub import HfApi, hf_hub_download
 import json
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
 import config
 
 st.set_page_config(
@@ -20,7 +20,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for professional look
+# Custom CSS
 st.markdown("""
 <style>
     .main-header {
@@ -48,92 +48,88 @@ st.markdown("""
         padding: 1rem;
         box-shadow: 0 2px 4px rgba(0,0,0,0.05);
     }
-    .stMetric {
-        background-color: #f8f9fa;
-        border-radius: 8px;
-        padding: 0.5rem;
-    }
 </style>
 """, unsafe_allow_html=True)
 
 # --- Helper Functions ---
 
 @st.cache_data(ttl=3600)
-def load_latest_results():
-    """Fetch the most recent result file from HF dataset."""
+def list_result_files():
+    """List all JSON result files in the HF dataset repo."""
     try:
         api = HfApi(token=config.HF_TOKEN)
         files = api.list_repo_files(repo_id=config.HF_OUTPUT_REPO, repo_type="dataset")
         json_files = sorted([f for f in files if f.endswith('.json')], reverse=True)
-        if not json_files:
-            return None, None
-        latest_file = json_files[0]
+        return json_files
+    except Exception as e:
+        st.error(f"Failed to list files from HF: {e}")
+        return []
+
+@st.cache_data(ttl=3600)
+def load_json_file(filename: str):
+    """Download and parse a specific JSON file from HF."""
+    try:
         local_path = hf_hub_download(
             repo_id=config.HF_OUTPUT_REPO,
-            filename=latest_file,
+            filename=filename,
             repo_type="dataset",
             token=config.HF_TOKEN,
             cache_dir="./hf_cache"
         )
         with open(local_path, 'r') as f:
             data = json.load(f)
-        return data, latest_file
+        return data
     except Exception as e:
-        st.error(f"Failed to load data: {e}")
+        st.error(f"Failed to load {filename}: {e}")
+        return None
+
+def get_latest_data():
+    """Fetch the most recent result file."""
+    files = list_result_files()
+    if not files:
         return None, None
+    latest_file = files[0]
+    data = load_json_file(latest_file)
+    return data, latest_file
 
 @st.cache_data(ttl=3600)
-def load_historical_tail_shapes(ticker: str, lookback_days: int = 90):
+def get_historical_tail_shapes(ticker: str, lookback_days: int = 90):
     """Load tail shape history for a specific ticker from recent files."""
-    try:
-        api = HfApi(token=config.HF_TOKEN)
-        files = api.list_repo_files(repo_id=config.HF_OUTPUT_REPO, repo_type="dataset")
-        json_files = sorted([f for f in files if f.endswith('.json')], reverse=True)[:lookback_days]
-        
-        dates = []
-        shapes = []
-        shapes_smooth = []
-        warnings = []
-        
-        for f in json_files:
-            date_str = f.replace("evt_tailrisk_", "").replace(".json", "")
-            try:
-                local_path = hf_hub_download(
-                    repo_id=config.HF_OUTPUT_REPO,
-                    filename=f,
-                    repo_type="dataset",
-                    token=config.HF_TOKEN,
-                    cache_dir="./hf_cache"
-                )
-                with open(local_path, 'r') as file:
-                    data = json.load(file)
-                # Search all universes for the ticker
-                for universe, tickers_data in data['universes'].items():
-                    if ticker in tickers_data:
-                        dates.append(date_str)
-                        shapes.append(tickers_data[ticker].get('tail_shape', None))
-                        shapes_smooth.append(tickers_data[ticker].get('tail_shape_smooth', None))
-                        warnings.append(tickers_data[ticker].get('tail_warning', 0))
-                        break
-            except:
-                continue
-                
-        df = pd.DataFrame({
-            'Date': pd.to_datetime(dates),
-            'tail_shape': shapes,
-            'tail_shape_smooth': shapes_smooth,
-            'tail_warning': warnings
-        }).sort_values('Date')
-        
-        return df
-    except Exception as e:
-        st.error(f"Error loading history for {ticker}: {e}")
-        return pd.DataFrame()
-
-def display_warning_badge(is_warning: bool):
-    if is_warning:
-        return '<span class="warning-badge">⚠️ WARNING</span>'
-    return '<span style="color: green;">✅ Normal</span>'
+    files = list_result_files()[:lookback_days]
+    dates = []
+    shapes = []
+    shapes_smooth = []
+    warnings = []
+    
+    for f in files:
+        date_str = f.replace("evt_tailrisk_", "").replace(".json", "")
+        data = load_json_file(f)
+        if data is None:
+            continue
+        # Search all universes for the ticker
+        found = False
+        for universe, tickers_data in data['universes'].items():
+            if ticker in tickers_data:
+                dates.append(date_str)
+                shapes.append(tickers_data[ticker].get('tail_shape'))
+                shapes_smooth.append(tickers_data[ticker].get('tail_shape_smooth'))
+                warnings.append(tickers_data[ticker].get('tail_warning', 0))
+                found = True
+                break
+        if not found:
+            dates.append(date_str)
+            shapes.append(None)
+            shapes_smooth.append(None)
+            warnings.append(0)
+    
+    df = pd.DataFrame({
+        'Date': pd.to_datetime(dates),
+        'tail_shape': shapes,
+        'tail_shape_smooth': shapes_smooth,
+        'tail_warning': warnings
+    }).sort_values('Date')
+    
+    return df
 
 # --- Sidebar ---
 st.sidebar.markdown("## ⚙️ Configuration")
@@ -148,8 +144,8 @@ st.sidebar.markdown(f"- Tail Warning Threshold (ξ): **{config.TAIL_SHAPE_WARNIN
 st.sidebar.divider()
 
 st.sidebar.markdown("### 🕒 Last Updated")
-data, latest_file = load_latest_results()
-if latest_file:
+data, latest_file = get_latest_data()
+if data:
     run_date = data.get('run_date', 'Unknown')
     st.sidebar.markdown(f"**{run_date}**")
 else:
@@ -173,13 +169,19 @@ if data is None:
     st.warning("No data available. Please run the daily pipeline first.")
     st.stop()
 
+# --- Debug Expander (optional, can be removed later) ---
+with st.expander("🔍 Debug Info"):
+    st.write("Latest file:", latest_file)
+    st.write("Data keys:", list(data.keys()))
+    st.write("Universes:", list(data['universes'].keys()))
+    st.write("Sample ticker data (GLD):", data['universes']['FI_COMMODITIES'].get('GLD', 'Not found'))
+
 # --- Tabs ---
 tab1, tab2, tab3 = st.tabs(["📋 Current Tail Risk Dashboard", "📈 Historical Analysis", "📊 Universe Overview"])
 
 with tab1:
     st.markdown("### Today's Tail Risk Summary")
     
-    # Universe selector
     universe_options = list(data['universes'].keys())
     selected_universe = st.selectbox("Select Universe", universe_options, index=2)  # Default to COMBINED
     
@@ -190,8 +192,8 @@ with tab1:
     for ticker, metrics in universe_data.items():
         rows.append({
             'Ticker': ticker,
-            'Tail Shape (ξ)': f"{metrics.get('tail_shape', 0):.3f}",
-            'Smoothed ξ': f"{metrics.get('tail_shape_smooth', 0):.3f}",
+            'Tail Shape (ξ)': f"{metrics.get('tail_shape', 0):.3f}" if metrics.get('tail_shape') is not None else 'N/A',
+            'Smoothed ξ': f"{metrics.get('tail_shape_smooth', 0):.3f}" if metrics.get('tail_shape_smooth') is not None else 'N/A',
             'VaR 99%': f"{metrics.get('var_99', 0)*100:.2f}%" if metrics.get('var_99') else 'N/A',
             'ES 99%': f"{metrics.get('es_99', 0)*100:.2f}%" if metrics.get('es_99') else 'N/A',
             'Warning': metrics.get('tail_warning', 0)
@@ -199,7 +201,6 @@ with tab1:
     
     df_display = pd.DataFrame(rows)
     
-    # Color-coded table
     def highlight_warning(row):
         if row['Warning'] == 1:
             return ['background-color: #ffcccc'] * len(row)
@@ -214,7 +215,6 @@ with tab1:
         }
     )
     
-    # Metrics cards for top warnings
     warning_tickers = [t for t, m in universe_data.items() if m.get('tail_warning', 0) == 1]
     if warning_tickers:
         st.markdown("### ⚠️ Active Tail Risk Warnings")
@@ -241,8 +241,8 @@ with tab2:
     
     with col2:
         if selected_ticker:
-            hist_df = load_historical_tail_shapes(selected_ticker, lookback)
-            if not hist_df.empty:
+            hist_df = get_historical_tail_shapes(selected_ticker, lookback)
+            if not hist_df.empty and hist_df['tail_shape_smooth'].notna().any():
                 fig = make_subplots(specs=[[{"secondary_y": True}]])
                 
                 fig.add_trace(
@@ -260,14 +260,12 @@ with tab2:
                     secondary_y=False
                 )
                 
-                # Add warning threshold line
                 fig.add_hline(
                     y=config.TAIL_SHAPE_WARNING_THRESHOLD, 
                     line_dash="dash", line_color="red",
                     annotation_text="Warning Threshold"
                 )
                 
-                # Shade regions where warning was active
                 warning_periods = hist_df[hist_df['tail_warning'] == 1]
                 if not warning_periods.empty:
                     fig.add_trace(
@@ -289,16 +287,18 @@ with tab2:
                 
                 st.plotly_chart(fig, use_container_width=True)
                 
-                # Display stats
-                st.markdown(f"**Latest Smoothed ξ:** {hist_df['tail_shape_smooth'].iloc[-1]:.3f}")
-                st.markdown(f"**Warning Status:** {display_warning_badge(hist_df['tail_warning'].iloc[-1] == 1)}", unsafe_allow_html=True)
+                latest_smooth = hist_df['tail_shape_smooth'].iloc[-1] if not hist_df.empty else None
+                latest_warning = hist_df['tail_warning'].iloc[-1] if not hist_df.empty else 0
+                if latest_smooth is not None:
+                    st.markdown(f"**Latest Smoothed ξ:** {latest_smooth:.3f}")
+                    warning_text = '<span class="warning-badge">⚠️ WARNING</span>' if latest_warning == 1 else '<span style="color: green;">✅ Normal</span>'
+                    st.markdown(f"**Warning Status:** {warning_text}", unsafe_allow_html=True)
             else:
                 st.info(f"No historical data available for {selected_ticker}")
 
 with tab3:
     st.markdown("### Universe-Wide Tail Risk Heatmap")
     
-    # Gather latest tail shapes for all tickers
     all_tickers_data = {}
     for universe, tickers_data in data['universes'].items():
         for ticker, metrics in tickers_data.items():
@@ -311,7 +311,6 @@ with tab3:
     df_all = pd.DataFrame.from_dict(all_tickers_data, orient='index')
     df_all = df_all.sort_values('tail_shape_smooth', ascending=False)
     
-    # Bar chart of tail shapes
     fig = go.Figure()
     colors = ['red' if w == 1 else 'steelblue' for w in df_all['tail_warning']]
     fig.add_trace(go.Bar(
