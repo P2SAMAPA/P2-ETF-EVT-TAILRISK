@@ -5,3 +5,4 @@ huggingface_hub>=0.16.0
 streamlit>=1.25.0
 plotly>=5.14.0
 pyarrow>=10.0.0
+matplotlib>=3.5.0
