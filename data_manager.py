@@ -1,6 +1,6 @@
 """
 Data loading and preprocessing for EVT engine.
-Handles master_data.parquet with millisecond timestamp index.
+Handles master_data.parquet with DatetimeIndex or millisecond timestamp index.
 """
 
 import pandas as pd
@@ -10,7 +10,6 @@ import config
 def load_master_data() -> pd.DataFrame:
     """
     Downloads master_data.parquet from Hugging Face and loads into DataFrame.
-    The parquet file has a millisecond Unix timestamp as the index.
     Returns a DataFrame with columns: Date, ticker, log_return.
     """
     print(f"Downloading {config.HF_DATA_FILE} from {config.HF_DATA_REPO}...")
@@ -23,40 +22,41 @@ def load_master_data() -> pd.DataFrame:
     )
     df = pd.read_parquet(file_path)
     print(f"Loaded {len(df)} rows from master data.")
+    print(f"Original columns: {df.columns.tolist()}")
+    print(f"Index type: {type(df.index)}, Index name: {df.index.name}")
     
-    # --- Handle index as millisecond timestamp ---
+    # --- Step 1: Ensure we have a 'Date' column from the index ---
     if isinstance(df.index, pd.DatetimeIndex):
-        # Already datetime index
+        # Index is already datetime – reset and rename the new column
         df = df.reset_index()
-        date_col = df.columns[0]
-        print(f"Index is DatetimeIndex. Using column '{date_col}' as date.")
-    elif df.index.dtype in ['int64', 'float64'] or df.index.name in ['timestamp', 'time', 'date']:
-        # Index is numeric (milliseconds)
-        print("Index appears to be numeric (milliseconds). Converting to datetime...")
+        # The new column will be named 'index' (or the index's name if any)
+        date_col = df.columns[0]  # Usually 'index' or 'Date'
+        df = df.rename(columns={date_col: 'Date'})
+        print(f"Reset DatetimeIndex. Date column renamed from '{date_col}' to 'Date'.")
+    elif df.index.dtype in ['int64', 'float64'] or 'timestamp' in str(df.index.name).lower():
+        # Index is numeric (likely milliseconds)
         df = df.reset_index()
         timestamp_col = df.columns[0]
-        # Convert milliseconds to datetime
         df['Date'] = pd.to_datetime(df[timestamp_col], unit='ms')
         df = df.drop(columns=[timestamp_col])
+        print(f"Converted numeric index (ms) to datetime. Dropped '{timestamp_col}'.")
     else:
-        # Fallback: look for date column
+        # Try to find a date column among columns
         possible_date_cols = ['Date', 'date', 'DATE', 'timestamp', 'time']
-        date_col = None
+        found = False
         for col in possible_date_cols:
             if col in df.columns:
-                date_col = col
+                df = df.rename(columns={col: 'Date'})
+                found = True
+                print(f"Renamed existing column '{col}' to 'Date'.")
                 break
-        if date_col is None:
-            # Try to reset index and assume first column is date
-            df = df.reset_index()
-            date_col = df.columns[0]
-            print(f"No obvious date column found. Using first column '{date_col}' as date.")
-        df = df.rename(columns={date_col: 'Date'})
+        if not found:
+            raise KeyError("Could not identify date column or index. Columns: " + str(df.columns.tolist()))
     
-    # Ensure Date is datetime
+    # Now 'Date' column exists and is datetime
     df['Date'] = pd.to_datetime(df['Date'])
     
-    # --- Detect ticker column ---
+    # --- Step 2: Detect and rename ticker column ---
     possible_ticker_cols = ['ticker', 'Ticker', 'symbol', 'Symbol', 'asset']
     ticker_col = None
     for col in possible_ticker_cols:
@@ -65,9 +65,11 @@ def load_master_data() -> pd.DataFrame:
             break
     if ticker_col is None:
         raise KeyError("Could not find ticker column. Available columns: " + str(df.columns.tolist()))
-    df = df.rename(columns={ticker_col: 'ticker'})
+    if ticker_col != 'ticker':
+        df = df.rename(columns={ticker_col: 'ticker'})
+    print(f"Using ticker column: 'ticker' (was '{ticker_col}')")
     
-    # --- Detect log_return column ---
+    # --- Step 3: Detect and rename log_return column ---
     possible_return_cols = ['log_return', 'Log_Return', 'log_ret', 'return', 'returns']
     return_col = None
     for col in possible_return_cols:
@@ -76,10 +78,18 @@ def load_master_data() -> pd.DataFrame:
             break
     if return_col is None:
         raise KeyError("Could not find log_return column. Available columns: " + str(df.columns.tolist()))
-    df = df.rename(columns={return_col: 'log_return'})
+    if return_col != 'log_return':
+        df = df.rename(columns={return_col: 'log_return'})
+    print(f"Using return column: 'log_return' (was '{return_col}')")
     
-    # Sort for rolling window consistency
+    # --- Step 4: Sort for consistency ---
     df = df.sort_values(['ticker', 'Date'])
+    
+    # Keep only necessary columns to save memory (optional)
+    # df = df[['Date', 'ticker', 'log_return']]
+    
+    print(f"Final columns: {df.columns.tolist()}")
+    print(f"Date range: {df['Date'].min()} to {df['Date'].max()}")
     
     return df
 
