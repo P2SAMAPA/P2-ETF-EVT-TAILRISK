@@ -11,12 +11,15 @@ HF_DATA_FILE = "master_data.parquet"
 
 HF_OUTPUT_REPO = "P2SAMAPA/p2-etf-evt-tailrisk-results"
 
-# --- Universe Definitions (mirroring master data) ---
+# --- Universe Definitions (mirroring master data exactly) ---
 FI_COMMODITIES_TICKERS = ["TLT", "VCIT", "LQD", "HYG", "VNQ", "GLD", "SLV"]
+
 EQUITY_SECTORS_TICKERS = [
     "SPY", "QQQ", "XLK", "XLF", "XLE", "XLV",
-    "XLI", "XLY", "XLP", "XLU", "GDX", "XME", "IWF", "XSD", XBI", "IWM"
+    "XLI", "XLY", "XLP", "XLU", "GDX", "XME",
+    "IWF", "XSD", "XBI", "IWM"
 ]
+
 ALL_TICKERS = list(set(FI_COMMODITIES_TICKERS + EQUITY_SECTORS_TICKERS))
 
 UNIVERSES = {
