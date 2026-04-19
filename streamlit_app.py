@@ -166,23 +166,33 @@ if data is None:
     st.warning("No data available. Please run the daily pipeline first.")
     st.stop()
 
-# --- Debug Expander ---
-with st.expander("🔍 Debug Info"):
-    st.write("Latest file:", latest_file)
-    st.write("Data keys:", list(data.keys()))
-    st.write("Universes:", list(data['universes'].keys()))
-    st.write("Sample ticker data (GLD):", data['universes']['FI_COMMODITIES'].get('GLD', 'Not found'))
-
 # --- Tabs ---
 tab1, tab2, tab3 = st.tabs(["📋 Current Tail Risk Dashboard", "📈 Historical Analysis", "📊 Universe Overview"])
 
 with tab1:
-    st.markdown("### Today's Tail Risk Summary")
-    
+    # Universe selector
     universe_options = list(data['universes'].keys())
     selected_universe = st.selectbox("Select Universe", universe_options, index=2)
-    
     universe_data = data['universes'][selected_universe]
+    
+    # --- Active Tail Risk Warnings (moved to top) ---
+    warning_tickers = [t for t, m in universe_data.items() if m.get('tail_warning', 0) == 1]
+    if warning_tickers:
+        st.markdown("### ⚠️ Active Tail Risk Warnings")
+        cols = st.columns(min(len(warning_tickers), 4))
+        for i, ticker in enumerate(warning_tickers[:4]):
+            with cols[i]:
+                m = universe_data[ticker]
+                st.metric(
+                    label=f"{ticker} Tail Shape",
+                    value=f"{m.get('tail_shape_smooth', 0):.3f}",
+                    delta=f"Raw: {m.get('tail_shape', 0):.3f}",
+                    delta_color="off"
+                )
+                st.caption(f"VaR 99%: {m.get('var_99', 0)*100:.2f}%")
+                st.caption(f"ES 99%: {m.get('es_99', 0)*100:.2f}%")
+    
+    st.markdown("### Today's Tail Risk Summary")
     
     rows = []
     for ticker, metrics in universe_data.items():
@@ -210,22 +220,6 @@ with tab1:
             "Warning": st.column_config.CheckboxColumn("Warning Flag")
         }
     )
-    
-    warning_tickers = [t for t, m in universe_data.items() if m.get('tail_warning', 0) == 1]
-    if warning_tickers:
-        st.markdown("### ⚠️ Active Tail Risk Warnings")
-        cols = st.columns(min(len(warning_tickers), 4))
-        for i, ticker in enumerate(warning_tickers[:4]):
-            with cols[i]:
-                m = universe_data[ticker]
-                st.metric(
-                    label=f"{ticker} Tail Shape",
-                    value=f"{m.get('tail_shape_smooth', 0):.3f}",
-                    delta=f"Raw: {m.get('tail_shape', 0):.3f}",
-                    delta_color="off"
-                )
-                st.caption(f"VaR 99%: {m.get('var_99', 0)*100:.2f}%")
-                st.caption(f"ES 99%: {m.get('es_99', 0)*100:.2f}%")
 
 with tab2:
     st.markdown("### Historical Tail Shape (ξ) Analysis")
