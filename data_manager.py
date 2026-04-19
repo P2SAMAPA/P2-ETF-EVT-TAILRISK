@@ -1,16 +1,18 @@
 """
 Data loading and preprocessing for EVT engine.
-Handles master_data.parquet with DatetimeIndex or millisecond timestamp index.
+Handles master_data.parquet in WIDE format (columns = tickers + macro variables).
 """
 
 import pandas as pd
+import numpy as np
 from huggingface_hub import hf_hub_download
 import config
 
 def load_master_data() -> pd.DataFrame:
     """
     Downloads master_data.parquet from Hugging Face and loads into DataFrame.
-    Returns a DataFrame with columns: Date, ticker, log_return.
+    The parquet is in WIDE format: Date index (or column) + columns for each ticker/macro.
+    Returns a LONG DataFrame with columns: Date, ticker, log_return.
     """
     print(f"Downloading {config.HF_DATA_FILE} from {config.HF_DATA_REPO}...")
     file_path = hf_hub_download(
@@ -20,78 +22,76 @@ def load_master_data() -> pd.DataFrame:
         token=config.HF_TOKEN,
         cache_dir="./hf_cache"
     )
-    df = pd.read_parquet(file_path)
-    print(f"Loaded {len(df)} rows from master data.")
-    print(f"Original columns: {df.columns.tolist()}")
-    print(f"Index type: {type(df.index)}, Index name: {df.index.name}")
+    df_wide = pd.read_parquet(file_path)
+    print(f"Loaded {len(df_wide)} rows and {len(df_wide.columns)} columns.")
     
-    # --- Step 1: Ensure we have a 'Date' column from the index ---
-    if isinstance(df.index, pd.DatetimeIndex):
-        # Index is already datetime – reset and rename the new column
-        df = df.reset_index()
-        # The new column will be named 'index' (or the index's name if any)
-        date_col = df.columns[0]  # Usually 'index' or 'Date'
-        df = df.rename(columns={date_col: 'Date'})
-        print(f"Reset DatetimeIndex. Date column renamed from '{date_col}' to 'Date'.")
-    elif df.index.dtype in ['int64', 'float64'] or 'timestamp' in str(df.index.name).lower():
-        # Index is numeric (likely milliseconds)
-        df = df.reset_index()
-        timestamp_col = df.columns[0]
-        df['Date'] = pd.to_datetime(df[timestamp_col], unit='ms')
-        df = df.drop(columns=[timestamp_col])
-        print(f"Converted numeric index (ms) to datetime. Dropped '{timestamp_col}'.")
+    # --- Step 1: Ensure 'Date' is a column (reset index if needed) ---
+    if isinstance(df_wide.index, pd.DatetimeIndex):
+        df_wide = df_wide.reset_index()
+        date_col = df_wide.columns[0]  # Usually 'index' or 'Date'
+        df_wide = df_wide.rename(columns={date_col: 'Date'})
+        print(f"Reset DatetimeIndex. Date column created from '{date_col}'.")
+    elif 'Date' not in df_wide.columns and 'date' not in df_wide.columns:
+        # Try to use the index if it's timestamp-like
+        if df_wide.index.dtype in ['int64', 'float64'] or isinstance(df_wide.index, pd.DatetimeIndex):
+            df_wide = df_wide.reset_index()
+            df_wide = df_wide.rename(columns={df_wide.columns[0]: 'Date'})
+            df_wide['Date'] = pd.to_datetime(df_wide['Date'], unit='ms' if df_wide['Date'].dtype == 'int64' else None)
+        else:
+            raise KeyError("Could not locate a date column or index.")
     else:
-        # Try to find a date column among columns
-        possible_date_cols = ['Date', 'date', 'DATE', 'timestamp', 'time']
-        found = False
-        for col in possible_date_cols:
-            if col in df.columns:
-                df = df.rename(columns={col: 'Date'})
-                found = True
-                print(f"Renamed existing column '{col}' to 'Date'.")
+        # Rename existing date column to 'Date'
+        for col in ['Date', 'date', 'DATE', 'timestamp']:
+            if col in df_wide.columns:
+                df_wide = df_wide.rename(columns={col: 'Date'})
                 break
-        if not found:
-            raise KeyError("Could not identify date column or index. Columns: " + str(df.columns.tolist()))
     
-    # Now 'Date' column exists and is datetime
-    df['Date'] = pd.to_datetime(df['Date'])
+    df_wide['Date'] = pd.to_datetime(df_wide['Date'])
     
-    # --- Step 2: Detect and rename ticker column ---
-    possible_ticker_cols = ['ticker', 'Ticker', 'symbol', 'Symbol', 'asset']
-    ticker_col = None
-    for col in possible_ticker_cols:
-        if col in df.columns:
-            ticker_col = col
-            break
-    if ticker_col is None:
-        raise KeyError("Could not find ticker column. Available columns: " + str(df.columns.tolist()))
-    if ticker_col != 'ticker':
-        df = df.rename(columns={ticker_col: 'ticker'})
-    print(f"Using ticker column: 'ticker' (was '{ticker_col}')")
+    # --- Step 2: Identify which columns are ETFs we care about ---
+    all_tickers = config.ALL_TICKERS
+    # Also include any tickers from FI and Equity that may be missing from ALL_TICKERS
+    universe_tickers = set(config.FI_COMMODITIES_TICKERS + config.EQUITY_SECTORS_TICKERS)
     
-    # --- Step 3: Detect and rename log_return column ---
-    possible_return_cols = ['log_return', 'Log_Return', 'log_ret', 'return', 'returns']
-    return_col = None
-    for col in possible_return_cols:
-        if col in df.columns:
-            return_col = col
-            break
-    if return_col is None:
-        raise KeyError("Could not find log_return column. Available columns: " + str(df.columns.tolist()))
-    if return_col != 'log_return':
-        df = df.rename(columns={return_col: 'log_return'})
-    print(f"Using return column: 'log_return' (was '{return_col}')")
+    # Find columns that match our tickers (case-insensitive just in case)
+    ticker_columns = [col for col in df_wide.columns if col.upper() in [t.upper() for t in universe_tickers]]
+    print(f"Found {len(ticker_columns)} ETF columns out of {len(universe_tickers)} expected tickers.")
     
-    # --- Step 4: Sort for consistency ---
-    df = df.sort_values(['ticker', 'Date'])
+    if not ticker_columns:
+        raise KeyError("No ETF ticker columns found. Columns: " + str(df_wide.columns.tolist()))
     
-    # Keep only necessary columns to save memory (optional)
-    # df = df[['Date', 'ticker', 'log_return']]
+    # --- Step 3: Melt only the ETF columns into long format ---
+    id_vars = ['Date']
+    # Keep macro columns? Not needed for EVT, but we could keep them for future use. For simplicity, we drop them.
+    df_long = pd.melt(
+        df_wide,
+        id_vars=id_vars,
+        value_vars=ticker_columns,
+        var_name='ticker',
+        value_name='value'
+    )
     
-    print(f"Final columns: {df.columns.tolist()}")
-    print(f"Date range: {df['Date'].min()} to {df['Date'].max()}")
+    # --- Step 4: Determine if 'value' is price or log return ---
+    # If values are mostly > 0.1, they are likely prices; if mostly between -0.1 and 0.1, they are returns.
+    sample = df_long['value'].dropna().iloc[:1000]
+    if sample.abs().mean() < 0.1:
+        print("Values appear to be log returns (small magnitude). Using directly as 'log_return'.")
+        df_long['log_return'] = df_long['value']
+    else:
+        print("Values appear to be prices. Computing log returns.")
+        df_long = df_long.sort_values(['ticker', 'Date'])
+        df_long['log_return'] = df_long.groupby('ticker')['value'].transform(lambda x: np.log(x / x.shift(1)))
     
-    return df
+    # Drop rows with NaN log returns (first day of each series)
+    df_long = df_long.dropna(subset=['log_return'])
+    
+    # --- Step 5: Final cleanup ---
+    df_long = df_long[['Date', 'ticker', 'log_return']].sort_values(['ticker', 'Date'])
+    
+    print(f"Final long DataFrame: {len(df_long)} rows, columns: {df_long.columns.tolist()}")
+    print(f"Date range: {df_long['Date'].min()} to {df_long['Date'].max()}")
+    
+    return df_long
 
 def get_etf_returns(df: pd.DataFrame, ticker: str) -> pd.Series:
     """
