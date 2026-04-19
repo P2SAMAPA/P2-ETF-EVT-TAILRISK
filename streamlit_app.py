@@ -9,8 +9,6 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from huggingface_hub import HfApi, hf_hub_download
 import json
-import os
-from datetime import datetime
 import config
 
 st.set_page_config(
@@ -106,7 +104,6 @@ def get_historical_tail_shapes(ticker: str, lookback_days: int = 90):
         data = load_json_file(f)
         if data is None:
             continue
-        # Search all universes for the ticker
         found = False
         for universe, tickers_data in data['universes'].items():
             if ticker in tickers_data:
@@ -169,7 +166,7 @@ if data is None:
     st.warning("No data available. Please run the daily pipeline first.")
     st.stop()
 
-# --- Debug Expander (optional, can be removed later) ---
+# --- Debug Expander ---
 with st.expander("🔍 Debug Info"):
     st.write("Latest file:", latest_file)
     st.write("Data keys:", list(data.keys()))
@@ -183,11 +180,10 @@ with tab1:
     st.markdown("### Today's Tail Risk Summary")
     
     universe_options = list(data['universes'].keys())
-    selected_universe = st.selectbox("Select Universe", universe_options, index=2)  # Default to COMBINED
+    selected_universe = st.selectbox("Select Universe", universe_options, index=2)
     
     universe_data = data['universes'][selected_universe]
     
-    # Convert to DataFrame for display
     rows = []
     for ticker, metrics in universe_data.items():
         rows.append({
@@ -309,35 +305,39 @@ with tab3:
             }
     
     df_all = pd.DataFrame.from_dict(all_tickers_data, orient='index')
-    df_all = df_all.sort_values('tail_shape_smooth', ascending=False)
     
-    fig = go.Figure()
-    colors = ['red' if w == 1 else 'steelblue' for w in df_all['tail_warning']]
-    fig.add_trace(go.Bar(
-        x=df_all.index,
-        y=df_all['tail_shape_smooth'],
-        marker_color=colors,
-        text=df_all['tail_shape_smooth'].round(3),
-        textposition='outside'
-    ))
-    fig.add_hline(
-        y=config.TAIL_SHAPE_WARNING_THRESHOLD,
-        line_dash="dash", line_color="red",
-        annotation_text="Warning Threshold"
-    )
-    fig.update_layout(
-        title="Current Smoothed Tail Shape (ξ) by ETF",
-        xaxis_title="ETF Ticker",
-        yaxis_title="Smoothed Tail Shape (ξ)",
-        height=500
-    )
-    st.plotly_chart(fig, use_container_width=True)
-    
-    st.markdown("### Risk Ranking")
-    st.dataframe(
-        df_all.style.background_gradient(subset=['tail_shape_smooth'], cmap='Reds'),
-        use_container_width=True,
-        column_config={
-            "tail_warning": st.column_config.CheckboxColumn("Warning Flag")
-        }
-    )
+    if df_all.empty:
+        st.warning("No ticker data available.")
+    else:
+        df_all = df_all.sort_values('tail_shape_smooth', ascending=False)
+        
+        fig = go.Figure()
+        colors = ['red' if w == 1 else 'steelblue' for w in df_all['tail_warning']]
+        fig.add_trace(go.Bar(
+            x=df_all.index,
+            y=df_all['tail_shape_smooth'],
+            marker_color=colors,
+            text=df_all['tail_shape_smooth'].round(3),
+            textposition='outside'
+        ))
+        fig.add_hline(
+            y=config.TAIL_SHAPE_WARNING_THRESHOLD,
+            line_dash="dash", line_color="red",
+            annotation_text="Warning Threshold"
+        )
+        fig.update_layout(
+            title="Current Smoothed Tail Shape (ξ) by ETF",
+            xaxis_title="ETF Ticker",
+            yaxis_title="Smoothed Tail Shape (ξ)",
+            height=500
+        )
+        st.plotly_chart(fig, use_container_width=True)
+        
+        st.markdown("### Risk Ranking")
+        st.dataframe(
+            df_all.style.background_gradient(subset=['tail_shape_smooth'], cmap='Reds'),
+            use_container_width=True,
+            column_config={
+                "tail_warning": st.column_config.CheckboxColumn("Warning Flag")
+            }
+        )
