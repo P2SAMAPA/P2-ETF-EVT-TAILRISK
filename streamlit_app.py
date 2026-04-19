@@ -162,6 +162,57 @@ st.sidebar.markdown("""
 st.markdown('<div class="main-header">⚠️ P2Quant EVT Tail Risk Monitor</div>', unsafe_allow_html=True)
 st.markdown('<div class="sub-header">Extreme Value Theory (Peaks-Over-Threshold) Analysis</div>', unsafe_allow_html=True)
 
+# --- How to Read This Dashboard (Expander) ---
+with st.expander("📘 How to Read This Dashboard", expanded=False):
+    st.markdown("""
+    ### Understanding EVT Tail Risk Metrics
+    
+    This dashboard uses **Extreme Value Theory (EVT)** to measure the risk of large, rare losses in ETFs. 
+    Here's what each metric means and how to act on it.
+    
+    ---
+    
+    #### 1️⃣ Tail Shape (ξ) – "Fatness of the Left Tail"
+    - **Range:** Can be negative (thin tail) to positive (fat tail).  
+    - **Warning Threshold:** `ξ > 0.3` triggers a **⚠️ WARNING** flag.  
+    - **Interpretation:**  
+        - `ξ < 0`: Tail is bounded; extreme losses are less likely than a normal distribution predicts.  
+        - `0 < ξ < 0.3`: Moderate tail risk.  
+        - `ξ > 0.3`: **Heavy tail regime.** Extreme losses are more frequent and more severe.  
+    - **Smoothed ξ (used for warnings):** EWMA-smoothed over 21 days to filter noise.  
+    - **Raw ξ:** Instantaneous estimate from the latest 1-year window.
+    
+    #### 2️⃣ VaR 99% – "The 1-in-100 Day Loss Threshold"
+    - **Definition:** The minimum loss expected on the worst 1% of days.  
+    - **Example:** If VaR 99% = 5.32%, there is a 1% chance that the ETF will lose **at least 5.32%** tomorrow.  
+    - **Use for:** Setting stop‑loss levels, position sizing (e.g., if you can tolerate 1% portfolio loss, allocate at most `1% / VaR`).
+    
+    #### 3️⃣ ES 99% – "Average Loss If Things Get Ugly"
+    - **Definition:** Expected Shortfall (also called CVaR). The **average** loss on days when the loss exceeds VaR.  
+    - **Example:** If ES 99% = 8.90%, then **when** a tail event occurs, the typical loss is 8.90%.  
+    - **Use for:** Tail‑risk hedging, stress testing, and worst‑case capital allocation.
+    
+    #### 4️⃣ Tail Warning Flag
+    - **Triggered when:** Smoothed ξ > 0.3.  
+    - **Action:** Consider reducing position size, hedging, or switching to cash for that ETF.  
+    - **Appearance:** Red warning cards at the top of the **Current Tail Risk Dashboard** tab.
+    
+    ---
+    
+    ### How to Use the Tabs
+    - **Current Tail Risk Dashboard:** See today's metrics for all ETFs in a selected universe. Warnings appear first.  
+    - **Historical Analysis:** Plot the evolution of ξ for any ETF to see if tail risk is rising or falling.  
+    - **Universe Overview:** Rank all ETFs by current smoothed ξ to identify the riskiest assets at a glance.
+    
+    ---
+    
+    ### Example Interpretation
+    - **GLD:** ξ = 0.325 → Warning active. VaR 99% = 5.32%, ES 99% = 8.90%.  
+      *Interpretation:* Gold is in a heavy‑tail regime. A 1‑in‑100 day could lose 5.3%+, and if that happens, the average loss is nearly 9%.  
+    - **SLV:** ξ = 0.472 → Severe warning. VaR 99% = 12.18%, ES 99% = 22.93%.  
+      *Interpretation:* Silver's tail is extremely fat. A tail event averages a **23% loss**. Strongly consider reducing exposure.
+    """)
+
 if data is None:
     st.warning("No data available. Please run the daily pipeline first.")
     st.stop()
