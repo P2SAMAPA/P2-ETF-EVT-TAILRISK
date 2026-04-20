@@ -539,15 +539,48 @@ def build_aum_dataset() -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 
+def _aum_from_flow_proxy_today() -> pd.DataFrame:
+    """
+    Fallback: compute today's AUM from flow_proxy close price × shares outstanding.
+    Used when yfinance returns no AUM data (weekends, API issues).
+    """
+    rows = []
+    for ticker in cfg.ALL_TICKERS:
+        try:
+            t = yf.Ticker(ticker)
+            # Shares outstanding — static field, works any day
+            shares = getattr(t.fast_info, "shares", None)
+            if not shares:
+                shares = t.info.get("sharesOutstanding") or t.info.get("impliedSharesOutstanding")
+            if not shares or float(shares) < 1e6:
+                continue
+            # Last close price — history works on weekends
+            hist = t.history(period="5d", auto_adjust=True)
+            if hist.empty:
+                continue
+            last_close = float(hist["Close"].iloc[-1])
+            aum = last_close * float(shares)
+            rows.append({"date": pd.Timestamp(cfg.TODAY), "etf": ticker, "aum": aum})
+            log.info(f"  {ticker}: proxy AUM ${aum/1e9:.2f}B (price×shares)")
+            time.sleep(0.15)
+        except Exception as e:
+            log.warning(f"  {ticker} proxy AUM: {e}")
+    return pd.DataFrame(rows)
+
+
 def update_aum_incremental(existing: Optional[pd.DataFrame]) -> pd.DataFrame:
     """
     Append today's snapshot to existing AUM history and recompute signals.
-    This is the only correct daily update path — never overwrites history.
+    Tries yfinance totalAssets first; falls back to price×shares proxy.
+    This is the correct daily update path — never overwrites history.
     """
     log.info("=== AUM Incremental Update ===")
     today_df = _fetch_aum_snapshot()
     if today_df.empty:
-        log.warning("No AUM snapshot — returning existing.")
+        log.warning("Primary AUM fetch returned empty — trying price×shares proxy...")
+        today_df = _aum_from_flow_proxy_today()
+    if today_df.empty:
+        log.warning("Both AUM methods failed — returning existing data unchanged.")
         return existing if existing is not None else pd.DataFrame()
 
     today_df["date"] = pd.to_datetime(today_df["date"])
