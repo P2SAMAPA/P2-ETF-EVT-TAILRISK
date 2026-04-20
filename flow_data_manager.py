@@ -193,8 +193,8 @@ def _parse_cot_for_etf(df_all: pd.DataFrame, etf: str) -> pd.DataFrame:
 
 
 def build_cot_dataset() -> pd.DataFrame:
-    """Full COT build from start_year to present."""
-    log.info(f"=== Building COT Dataset ({start_year}–present) ===")
+    """Full COT build from 2008 to present."""
+    log.info(f"=== Building COT Dataset (2008–present) ===")
     frames = []
     for yr in range(2008, datetime.now().year + 1):
         df_yr = _download_cftc_year(yr)
