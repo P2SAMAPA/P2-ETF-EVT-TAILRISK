@@ -77,7 +77,6 @@ def _push_parquet(df: pd.DataFrame, hf_path: str, msg: str):
 
 # ── 1. COT DATA ───────────────────────────────────────────────────────────────
 
-# CFTC publishes annual disaggregated CSV zips at this URL pattern
 CFTC_BASE = "https://www.cftc.gov/files/dea/history/fut_disagg_txt_{year}.zip"
 
 def _download_cftc_year(year: int) -> Optional[pd.DataFrame]:
@@ -113,6 +112,13 @@ def _parse_cot_for_etf(df_all: pd.DataFrame, etf: str) -> pd.DataFrame:
     col_long   = cfg.COT_COLUMNS["long"]
     col_short  = cfg.COT_COLUMNS["short"]
 
+    # Check that required columns exist in the dataframe
+    required_cols = [col_market, col_date]
+    missing = [c for c in required_cols if c not in df_all.columns]
+    if missing:
+        log.warning(f"  {etf}: missing required CFTC columns: {missing}")
+        return pd.DataFrame()
+
     mask = df_all[col_market].str.upper().str.contains(
         market_name.upper().split(" - ")[0], na=False
     )
@@ -120,18 +126,21 @@ def _parse_cot_for_etf(df_all: pd.DataFrame, etf: str) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame()
 
-    # Parse YYMMDD date format
-    df["date"] = pd.to_datetime(df[col_date].astype(str), format="%y%m%d", errors="coerce")
+    # Parse YYMMDD or YYYY-MM-DD date format
+    df["date"] = pd.to_datetime(df[col_date], errors="coerce")
     df = df.dropna(subset=["date"])
 
+    # Process long/short columns only if they exist
     for c in [col_long, col_short]:
-        df[c] = pd.to_numeric(df[c].astype(str).str.replace(",", ""), errors="coerce")
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c].astype(str).str.replace(",", ""), errors="coerce")
+        else:
+            df[c] = np.nan
 
     df["net_position"] = df[col_long] - df[col_short]
     df = df[["date", "net_position"]].drop_duplicates("date").sort_values("date")
     df["etf"] = etf
 
-    # COT Index: rolling 52-week percentile rank of net_position (0–100)
     window = cfg.COT_LOOKBACK_WEEKS
     df["cot_index"] = (
         df["net_position"]
@@ -140,7 +149,6 @@ def _parse_cot_for_etf(df_all: pd.DataFrame, etf: str) -> pd.DataFrame:
                raw=True)
     )
 
-    # Net position z-score (alternative signal)
     df["net_position_z"] = (
         (df["net_position"] - df["net_position"].rolling(window, min_periods=4).mean())
         / (df["net_position"].rolling(window, min_periods=4).std() + 1e-9)
@@ -163,7 +171,7 @@ def build_cot_dataset() -> pd.DataFrame:
         df_yr = _download_cftc_year(yr)
         if df_yr is not None:
             frames.append(df_yr)
-        time.sleep(0.3)  # be polite to CFTC server
+        time.sleep(0.3)
 
     if not frames:
         log.error("No CFTC data downloaded.")
@@ -209,7 +217,6 @@ def build_flow_proxy_dataset() -> pd.DataFrame:
                 log.warning(f"  {ticker}: no yfinance data")
                 continue
 
-            # Flatten MultiIndex columns if present
             if isinstance(raw.columns, pd.MultiIndex):
                 raw.columns = raw.columns.get_level_values(0)
 
@@ -220,7 +227,6 @@ def build_flow_proxy_dataset() -> pd.DataFrame:
             for w in cfg.FLOW_PROXY_WINDOWS:
                 df[f"dv_chg_{w}d"] = df["dollar_vol"].pct_change(w)
 
-            # Z-score of 21-day change vs trailing 252-day history
             w_z = cfg.FLOW_PROXY_ZSCORE_WINDOW
             chg21 = df["dv_chg_21d"]
             df["flow_proxy_z"] = (
@@ -228,7 +234,6 @@ def build_flow_proxy_dataset() -> pd.DataFrame:
                 / (chg21.rolling(w_z, min_periods=60).std() + 1e-9)
             )
 
-            # Relative volume (today / 21-day average)
             df["rel_volume"] = (
                 df["dollar_vol"]
                 / df["dollar_vol"].rolling(21, min_periods=5).mean()
@@ -264,9 +269,9 @@ def _fetch_short_interest_nasdaq(ticker: str) -> pd.DataFrame:
     if not cfg.NASDAQ_API_KEY:
         return pd.DataFrame()
     try:
-        import nasdaqdatalink
-        nasdaqdatalink.ApiConfig.api_key = cfg.NASDAQ_API_KEY
-        df = nasdaqdatalink.get_table(
+        import nasdaq_data_link as ndl
+        ndl.ApiConfig.api_key = cfg.NASDAQ_API_KEY
+        df = ndl.get_table(
             "FINRA/SHORTS",
             ticker=ticker,
             paginate=True,
@@ -274,7 +279,6 @@ def _fetch_short_interest_nasdaq(ticker: str) -> pd.DataFrame:
         if df.empty:
             return pd.DataFrame()
         df = df.rename(columns=str.lower)
-        # Normalise column names across API versions
         date_col = next((c for c in df.columns if "date" in c or "settlement" in c), None)
         vol_col  = next((c for c in df.columns if "short" in c and "vol" in c), None)
         tot_col  = next((c for c in df.columns if "total" in c and "vol" in c), None)
@@ -349,12 +353,10 @@ def build_short_interest_dataset() -> pd.DataFrame:
 
         df = df.sort_values("date")
 
-        # Short ratio change over configurable lookback
         lookback = cfg.SHORT_LOOKBACK
         df["short_ratio_chg"] = df["short_ratio"].pct_change(
             min(lookback, len(df) - 1)
         )
-        # Z-score
         df["short_ratio_z"] = (
             (df["short_ratio"] - df["short_ratio"].rolling(lookback, min_periods=4).mean())
             / (df["short_ratio"].rolling(lookback, min_periods=4).std() + 1e-9)
@@ -386,7 +388,6 @@ def build_aum_dataset() -> pd.DataFrame:
     """
     log.info("=== Building AUM Dataset ===")
 
-    # Pull existing HF history (incremental append)
     existing = _pull_parquet(cfg.HF_FILES["aum"])
 
     rows = []
@@ -395,7 +396,6 @@ def build_aum_dataset() -> pd.DataFrame:
             info = yf.Ticker(ticker).fast_info
             aum = getattr(info, "total_assets", None)
             if aum is None:
-                # Try the slower .info dict
                 full_info = yf.Ticker(ticker).info
                 aum = full_info.get("totalAssets", None)
 
@@ -414,9 +414,7 @@ def build_aum_dataset() -> pd.DataFrame:
 
     new_rows = pd.DataFrame(rows)
 
-    # Merge with existing history
     if existing is not None and not existing.empty:
-        # Remove today's date from existing (avoid duplicate)
         existing = existing[existing["date"].astype(str) != cfg.TODAY]
         combined = pd.concat([existing, new_rows], ignore_index=True)
     else:
@@ -428,10 +426,9 @@ def build_aum_dataset() -> pd.DataFrame:
     combined["date"] = pd.to_datetime(combined["date"])
     combined = combined.sort_values(["etf", "date"]).drop_duplicates(["date", "etf"])
 
-    # Compute AUM change signals
     combined["aum_chg_5d"]  = combined.groupby("etf")["aum"].pct_change(5)
     combined["aum_chg_21d"] = combined.groupby("etf")["aum"].pct_change(21)
-    combined["aum_change"]  = combined["aum_chg_21d"]   # primary signal
+    combined["aum_change"]  = combined["aum_chg_21d"]
 
     log.info(f"AUM dataset: {len(combined)} rows, {combined['etf'].nunique()} ETFs")
     return combined.reset_index(drop=True)
@@ -447,22 +444,11 @@ def build_composite_scores(
 ) -> pd.DataFrame:
     """
     Combine all four signals into a single composite FLOW score per (date, etf).
-
-    Strategy:
-      - COT Index        (weekly, forward-filled to daily) — contrarian signal
-      - Flow Proxy Z     (daily)                           — momentum signal
-      - Short Ratio Chg  (twice-monthly, forward-filled)   — contrarian signal
-      - AUM Change 21d   (daily snapshot)                  — momentum signal
-
-    All signals are cross-sectionally z-scored within each date before weighting.
-    Final score is in [-3, +3] range; higher = stronger inflow/bullish positioning.
     """
     log.info("=== Building Composite Flow Scores ===")
 
-    # Build a daily date spine from all available dates
     all_dates = pd.date_range(cfg.START_DATE, cfg.TODAY, freq="B")
 
-    # --- Pivot each source to wide (date × etf) then forward-fill ---
     def to_wide(df: pd.DataFrame, date_col: str,
                 val_col: str, ffill_limit: int = 10) -> pd.DataFrame:
         if df.empty:
@@ -482,7 +468,6 @@ def build_composite_scores(
     wide_aum   = to_wide(df_aum,   "date", "aum_change",     ffill_limit=5)
 
     def xs_zscore(wide: pd.DataFrame) -> pd.DataFrame:
-        """Cross-sectional z-score: subtract date mean, divide by date std."""
         mu  = wide.mean(axis=1)
         sig = wide.std(axis=1).replace(0, 1)
         return wide.sub(mu, axis=0).div(sig, axis=0)
@@ -500,7 +485,6 @@ def build_composite_scores(
       + z_aum   * w["aum_change"]
     )
 
-    # Melt back to long format
     result_frames = []
     for wide, name in [
         (z_cot,   "cot_index_z"),
@@ -518,7 +502,6 @@ def build_composite_scores(
     out = out.dropna(subset=["composite_score"])
     out = out[out["date"] >= cfg.START_DATE].sort_values(["date", "etf"])
 
-    # Rank within each date (1 = best flow signal)
     out["flow_rank"] = (
         out.groupby("date")["composite_score"]
            .rank(ascending=False, method="min")
@@ -562,12 +545,10 @@ def run_daily_update():
     """
     log.info("=== DAILY UPDATE MODE ===")
 
-    # Pull existing datasets from HF
     df_cot   = _pull_parquet(cfg.HF_FILES["cot"])   or pd.DataFrame()
     df_flow  = _pull_parquet(cfg.HF_FILES["flow_proxy"]) or pd.DataFrame()
     df_short = _pull_parquet(cfg.HF_FILES["short_interest"]) or pd.DataFrame()
 
-    # For COT: only re-download current year (new weekly releases)
     current_year = datetime.now().year
     df_cot_new = _download_cftc_year(current_year)
     if df_cot_new is not None:
@@ -587,7 +568,6 @@ def run_daily_update():
                 df_cot = new_cot
             _push_parquet(df_cot, cfg.HF_FILES["cot"], f"Daily COT update {cfg.TODAY}")
 
-    # Flow proxy: append today's data
     today_flow_frames = []
     for ticker in cfg.ALL_TICKERS:
         try:
@@ -610,7 +590,6 @@ def run_daily_update():
 
     if today_flow_frames:
         df_today = pd.DataFrame(today_flow_frames)
-        # Recompute rolling signals by merging with history
         df_flow_full = pd.concat([df_flow, df_today], ignore_index=True) if not df_flow.empty else df_today
         df_flow_full["date"] = pd.to_datetime(df_flow_full["date"])
 
@@ -628,12 +607,10 @@ def run_daily_update():
         df_flow = df_flow_full
         _push_parquet(df_flow, cfg.HF_FILES["flow_proxy"], f"Daily flow update {cfg.TODAY}")
 
-    # AUM: always append today's snapshot
     df_aum = build_aum_dataset()
     if not df_aum.empty:
         _push_parquet(df_aum, cfg.HF_FILES["aum"], f"Daily AUM update {cfg.TODAY}")
 
-    # Recompute composite scores with latest data
     df_comp = build_composite_scores(df_cot, df_flow, df_short, df_aum)
     if not df_comp.empty:
         _push_parquet(df_comp, cfg.HF_FILES["composite"], f"Daily composite update {cfg.TODAY}")
