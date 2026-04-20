@@ -1,0 +1,71 @@
+name: Flow Module — Historical Seed (run once)
+
+on:
+  workflow_dispatch:
+    inputs:
+      skip_cot:
+        description: 'Skip COT download (already seeded)?'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
+      skip_flow:
+        description: 'Skip Flow Proxy download (already seeded)?'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
+      skip_short:
+        description: 'Skip Short Interest download (already seeded)?'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
+      skip_aum:
+        description: 'Skip AUM snapshot?'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
+
+# This workflow is triggered manually ONLY.
+# Run it once after committing the flow_*.py files.
+# After it completes successfully, daily_run.yml handles all future updates.
+
+jobs:
+  seed-flow-data:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360       # Full backfill: ~17 CFTC zips + 20 ETFs yfinance = ~30 min
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run historical seed
+        env:
+          HF_TOKEN:       ${{ secrets.HF_TOKEN }}
+          NASDAQ_API_KEY: ${{ secrets.NASDAQ_API_KEY }}
+        run: |
+          ARGS=""
+          if [ "${{ github.event.inputs.skip_cot }}"   = "true" ]; then ARGS="$ARGS --skip-cot";   fi
+          if [ "${{ github.event.inputs.skip_flow }}"  = "true" ]; then ARGS="$ARGS --skip-flow";  fi
+          if [ "${{ github.event.inputs.skip_short }}" = "true" ]; then ARGS="$ARGS --skip-short"; fi
+          if [ "${{ github.event.inputs.skip_aum }}"  = "true" ]; then ARGS="$ARGS --skip-aum";   fi
+          echo "Running: python flow_seed.py $ARGS"
+          python flow_seed.py $ARGS
+
+      - name: Upload seed log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: flow-seed-log
+          path: flow_seed.log
+          retention-days: 30
