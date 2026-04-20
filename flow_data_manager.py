@@ -398,30 +398,140 @@ def _fetch_short_finra_direct(ticker: str) -> pd.DataFrame:
 
 
 def _fetch_short_nasdaq(ticker: str) -> pd.DataFrame:
-    """Nasdaq Data Link FINRA/SHORTS — requires NASDAQ_API_KEY."""
+    """
+    Nasdaq Data Link FINRA short volume — requires NASDAQ_API_KEY.
+    Tries FINRA/FNYX (NYSE-listed ETFs) then FINRA/FNSQ (Nasdaq-listed ETFs).
+    Columns returned: Date, Symbol, ShortVolume, ShortExemptVolume, TotalVolume, Market
+    """
     if not cfg.NASDAQ_API_KEY:
         return pd.DataFrame()
     try:
-        import nasdaq_data_link as ndl
+        import nasdaqdatalink as ndl
         ndl.ApiConfig.api_key = cfg.NASDAQ_API_KEY
-        df = ndl.get_table("FINRA/SHORTS", ticker=ticker, paginate=True)
-        if df.empty:
+
+        frames = []
+        # Try both exchanges — ETFs can be listed on either
+        for table in ["FINRA/FNYX", "FINRA/FNSQ"]:
+            try:
+                df = ndl.get_table(table, ticker=ticker, paginate=True)
+                if not df.empty:
+                    frames.append(df)
+            except Exception:
+                continue
+
+        if not frames:
             return pd.DataFrame()
+
+        df = pd.concat(frames, ignore_index=True)
         df.columns = [c.lower() for c in df.columns]
-        date_col = next((c for c in df.columns if "date" in c or "settlement" in c), None)
-        vol_col  = next((c for c in df.columns if "short" in c and "vol" in c), None)
-        tot_col  = next((c for c in df.columns if "total" in c and "vol" in c), None)
+
+        # Normalise column names across FINRA/FNYX and FINRA/FNSQ
+        date_col  = next((c for c in df.columns if "date" in c), None)
+        vol_col   = next((c for c in df.columns if c in ("shortvolume", "short_volume")), None)
+        tot_col   = next((c for c in df.columns if c in ("totalvolume", "total_volume")), None)
+
         if not date_col or not vol_col:
+            log.warning(f"  {ticker}: unexpected columns: {df.columns.tolist()}")
             return pd.DataFrame()
+
         df["date"]         = pd.to_datetime(df[date_col])
         df["short_volume"] = pd.to_numeric(df[vol_col], errors="coerce")
         df["total_volume"] = pd.to_numeric(df[tot_col], errors="coerce") if tot_col else 1.0
         df["short_ratio"]  = df["short_volume"] / (df["total_volume"] + 1e-9)
         df["etf"] = ticker
-        return df[["date", "etf", "short_volume", "short_ratio"]].dropna(subset=["date"])
+
+        df = (df[["date", "etf", "short_volume", "short_ratio"]]
+              .dropna(subset=["date", "short_ratio"])
+              .drop_duplicates("date")
+              .sort_values("date"))
+        return df
     except Exception as e:
         log.warning(f"  {ticker} Nasdaq DL: {e}")
         return pd.DataFrame()
+
+
+def _fetch_short_finra_cdn(ticker: str) -> pd.DataFrame:
+    """
+    Download FINRA daily short volume files from the public CDN.
+    URL: https://cdn.finra.org/equity/regsho/daily/{exchange}{YYYYMMDD}.txt
+    Format: Symbol|ShortVolume|ShortExemptVolume|TotalVolume|Market|Date
+    Covers all available dates going back to ~2014. No API key needed.
+    """
+    import io as _io
+    from datetime import timedelta
+
+    frames = []
+    exchanges = ["CNMSshvol", "FNSQshvol", "FNYXshvol", "FORFshvol"]
+
+    # Build list of trading dates to try (last 504 trading days ≈ 2 years)
+    # We generate calendar dates and skip weekends; FINRA skips holidays automatically
+    end   = datetime.now()
+    start = end - timedelta(days=730)
+    dates = []
+    cur = start
+    while cur <= end:
+        if cur.weekday() < 5:   # Mon–Fri only
+            dates.append(cur.strftime("%Y%m%d"))
+        cur += timedelta(days=1)
+
+    log.info(f"  {ticker}: fetching FINRA CDN files ({len(dates)} dates, 4 exchanges)...")
+
+    for date_str in dates:
+        day_found = False
+        for exch in exchanges:
+            url = f"https://cdn.finra.org/equity/regsho/daily/{exch}{date_str}.txt"
+            try:
+                r = requests.get(url, timeout=20,
+                                 headers={"User-Agent": "Mozilla/5.0"})
+                if r.status_code != 200:
+                    continue
+                # Parse pipe-delimited file
+                text = r.text.strip()
+                if not text or len(text) < 20:
+                    continue
+                df_day = pd.read_csv(_io.StringIO(text), sep="|",
+                                     on_bad_lines="skip")
+                df_day.columns = [c.strip().lower() for c in df_day.columns]
+
+                sym_col   = next((c for c in df_day.columns if "symbol" in c), None)
+                short_col = next((c for c in df_day.columns if "shortvolume" in c and "exempt" not in c), None)
+                total_col = next((c for c in df_day.columns if "totalvolume" in c), None)
+
+                if not sym_col or not short_col:
+                    continue
+
+                # Filter to this ticker
+                mask = df_day[sym_col].astype(str).str.upper() == ticker.upper()
+                row  = df_day[mask]
+                if row.empty:
+                    continue
+
+                sv = pd.to_numeric(row[short_col].iloc[0], errors="coerce")
+                tv = pd.to_numeric(row[total_col].iloc[0], errors="coerce") if total_col else None
+
+                if pd.isna(sv):
+                    continue
+
+                frames.append({
+                    "date":         pd.Timestamp(date_str),
+                    "etf":          ticker,
+                    "short_volume": float(sv),
+                    "total_volume": float(tv) if tv and not pd.isna(tv) else float(sv),
+                    "short_ratio":  float(sv) / (float(tv) + 1e-9) if tv and not pd.isna(tv) else 0.5,
+                })
+                day_found = True
+                break   # found this date in one exchange, move to next date
+            except Exception:
+                continue
+
+        time.sleep(0.02)   # polite delay
+
+    if not frames:
+        return pd.DataFrame()
+
+    result = pd.DataFrame(frames).drop_duplicates("date").sort_values("date")
+    log.info(f"  {ticker}: {len(result)} trading days from FINRA CDN")
+    return result
 
 
 def _add_short_signals(df: pd.DataFrame) -> pd.DataFrame:
@@ -436,18 +546,34 @@ def _add_short_signals(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_short_interest_dataset() -> pd.DataFrame:
+    """
+    Fetch short interest for all ETFs.
+    Priority order:
+      1. Nasdaq Data Link FINRA/FNYX + FINRA/FNSQ (if NASDAQ_API_KEY set — longest history)
+      2. FINRA CDN daily files (no key needed, ~2yr history, slightly slower)
+      3. FINRA direct API (no key, limited)
+    """
     log.info("=== Building Short Interest Dataset ===")
     frames = []
     for ticker in cfg.ALL_TICKERS:
+        # Try Nasdaq Data Link first (longest history)
         df = _fetch_short_nasdaq(ticker) if cfg.NASDAQ_API_KEY else pd.DataFrame()
-        if df.empty:
+
+        # Fallback: FINRA CDN daily files (free, no key, ~2yr)
+        if df is None or df.empty:
+            log.info(f"  {ticker}: trying FINRA CDN...")
+            df = _fetch_short_finra_cdn(ticker)
+
+        # Last resort: FINRA direct API
+        if df is None or df.empty:
             df = _fetch_short_finra_direct(ticker)
-        if df.empty:
-            log.warning(f"  {ticker}: no data")
+
+        if df is None or df.empty:
+            log.warning(f"  {ticker}: no short interest data from any source")
             continue
         frames.append(df)
         log.info(f"  {ticker}: {len(df)} obs")
-        time.sleep(0.2)
+        time.sleep(0.1)
 
     if not frames:
         return pd.DataFrame()
