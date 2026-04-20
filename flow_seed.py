@@ -105,14 +105,18 @@ def main():
     df_aum = None
     if not args.skip_aum:
         log.info("\n[4/5] Fetching AUM snapshots via yfinance...")
-        log.info("  Note: yfinance only provides current snapshot.")
-        log.info("  AUM history will grow as flow_trainer.py runs daily.")
-        df_aum = dm.build_aum_dataset()
+        log.info("  Uses 3-method fallback: fast_info → .info → price×shares proxy.")
+        log.info("  The price×shares proxy works on weekends and non-market hours.")
+        # Pull existing AUM history from HF and append today's snapshot
+        existing_aum = dm._pull_parquet(cfg.HF_FILES["aum"])
+        if existing_aum is not None:
+            log.info(f"  Found existing AUM: {len(existing_aum)} rows — will append today.")
+        df_aum = dm.update_aum_incremental(existing_aum)
         if df_aum is not None and not df_aum.empty:
-            dm._push_parquet(df_aum, cfg.HF_FILES["aum"], "Seed: AUM initial snapshot")
+            dm._push_parquet(df_aum, cfg.HF_FILES["aum"], "Seed: AUM snapshot")
             log.info(f"  ✅ AUM seeded: {len(df_aum)} rows ({df_aum['etf'].nunique()} ETFs)")
         else:
-            log.warning("  ⚠️  AUM returned no data")
+            log.warning("  ⚠️  AUM returned no data — check yfinance availability")
     else:
         log.info("[4/5] Skipping AUM (--skip-aum)")
         df_aum = dm._pull_parquet(cfg.HF_FILES["aum"])
