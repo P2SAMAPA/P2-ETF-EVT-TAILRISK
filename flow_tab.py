@@ -135,7 +135,7 @@ def _render_composite_dashboard(payload: dict):
         return "background-color: #fff9c4"
 
     st.dataframe(
-        df.style.applymap(_color_score, subset=["Composite Score"]),
+        df.style.map(_color_score, subset=["Composite Score"]),
         use_container_width=True,
         hide_index=True,
     )
