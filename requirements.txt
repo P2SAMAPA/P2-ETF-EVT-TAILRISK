@@ -1,3 +1,4 @@
+# ── Core (unchanged from EVT engine) ─────────────────────────────────────────
 pandas>=1.5.0
 numpy>=1.23.0
 scipy>=1.9.0
@@ -6,3 +7,10 @@ streamlit>=1.25.0
 plotly>=5.14.0
 pyarrow>=10.0.0
 matplotlib>=3.5.0
+
+# ── Flow & Positioning module additions ───────────────────────────────────────
+yfinance>=0.2.18          # Flow proxy (dollar-volume) + AUM snapshots
+requests>=2.28.0          # CFTC zip downloads + FINRA direct API
+nasdaqdatalink>=1.0.0     # Nasdaq Data Link free tier (short interest)
+                           # Set NASDAQ_API_KEY secret for full history
+                           # Falls back to FINRA direct API if key not set
