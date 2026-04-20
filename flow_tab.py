@@ -89,6 +89,32 @@ def _render_composite_dashboard(payload: dict):
         index=universe_options.index("COMBINED") if "COMBINED" in universe_options else 0,
     )
 
+    with st.expander("📘 How to interpret the Rankings", expanded=False):
+        st.markdown("""
+**The Composite Score** is a weighted z-score combining all four signals (COT, Flow Proxy,
+Short Interest, AUM), cross-sectionally normalised within the universe on each date —
+so scores are *relative rankings* within the peer group, not absolute values.
+
+| Score | Indicator | Meaning |
+|---|---|---|
+| **> +0.5** | 🟢 | Above-average flow momentum — institutions positioning **into** this ETF |
+| **−0.5 to +0.5** | 🟡 | Neutral — no strong positioning signal |
+| **< −0.5** | 🔴 | Below-average flow — money leaving or short interest building |
+
+**Individual z-score columns** show each signal's contribution:
+- **COT Z** — speculator futures positioning relative to 52-week history
+- **Flow Proxy Z** — dollar-volume momentum relative to 1-year average
+- **Short Ratio Chg Z** — change in short interest vs 3-month history
+- **AUM Change Z** — fund inflow/redemption momentum
+
+**Important:** This is a *positioning* signal, not a return forecast. It tells you where
+institutional money is flowing — use it as a filter or overlay on top of your EVT Tail Risk
+and Siamese Ranker signals for highest-conviction trade ideas.
+
+**Best confluence setup 🎯:** Top composite rank + EVT tail warning **not** active +
+Siamese Ranker top pick = all three engines aligned.
+        """)
+
     universe_data = payload.get("universes", {}).get(sel_universe, {})
     if not universe_data:
         st.info("No composite data available yet. Run flow_trainer.py first.")
@@ -125,8 +151,6 @@ def _render_composite_dashboard(payload: dict):
 
     df = pd.DataFrame(rows).sort_values("Composite Score", ascending=False)
 
-    # Add a simple direction indicator column instead of cell styling
-    # (avoids pandas Styler API version issues on Streamlit Cloud)
     def _score_indicator(val):
         try:
             v = float(val)
@@ -164,18 +188,40 @@ def _render_cot_section(df_cot: pd.DataFrame):
     """COT net positioning charts."""
     st.markdown("### 📊 COT Speculator Positioning")
 
-    with st.expander("📘 How to read COT signals", expanded=False):
+    with st.expander("📘 How to interpret COT Positioning", expanded=False):
         st.markdown("""
-**COT Index (0–100 percentile):**
-- **>80** — Speculators are very crowded **LONG** → contrarian *bearish* signal
-- **<20** — Speculators are very crowded **SHORT** → contrarian *bullish* signal
-- **40–60** — Neutral positioning
+The CFTC publishes every Friday how many futures contracts **leveraged speculators**
+(hedge funds, CTAs) hold long vs short across major markets. This gives direct visibility
+into institutional positioning *before* it shows up in ETF prices.
 
-**Net Position Z-score:**
-- Number of standard deviations from the 52-week mean
-- Extreme readings (>±2) historically precede reversals
+#### COT Index (0–100 percentile)
+The current net long position ranked within its 52-week history:
 
-**Available ETFs with COT data:** GLD, SLV, TLT (Treasury futures), SPY (S&P futures), QQQ (Nasdaq futures)
+| Reading | Positioning | Signal |
+|---|---|---|
+| **> 80** | Speculators very crowded **LONG** | ⚠️ Contrarian **bearish** — crowded longs tend to reverse |
+| **40 – 60** | Neutral | No signal |
+| **< 20** | Speculators very crowded **SHORT** | ✅ Contrarian **bullish** — short squeeze risk is high |
+
+**Example:** GLD COT Index at 90 → hedge funds maximally long gold futures.
+Historically this precedes a pullback as the crowded trade unwinds.
+TLT COT Index below 20 → funds maximally short Treasuries → classic contrarian long setup.
+
+#### Net Position Z-score
+Measures how many standard deviations current positioning is from its 52-week mean.
+Extreme readings (> ±2) historically precede sharp reversals.
+
+#### ETF → Futures mapping used
+| ETF | Futures proxy |
+|---|---|
+| GLD, GDX | COMEX Gold |
+| SLV, XME | COMEX Silver |
+| TLT | 30-Year Treasury (CBOT) |
+| SPY | E-Mini S&P 500 |
+| QQQ | Nasdaq-100 |
+| XLE | WTI Crude Oil (NYMEX) |
+
+*COT is a weekly signal — data is forward-filled to daily for the composite score.*
         """)
 
     if df_cot is None or df_cot.empty:
@@ -260,15 +306,37 @@ def _render_flow_proxy_section(df_flow: pd.DataFrame):
     """Dollar-volume momentum charts."""
     st.markdown("### 💰 Flow Proxy — Dollar-Volume Momentum")
 
-    with st.expander("📘 How to read Flow Proxy signals", expanded=False):
+    with st.expander("📘 How to interpret Flow Proxy", expanded=False):
         st.markdown("""
-**Flow Proxy Z-score** = Z-score of 21-day dollar-volume change vs trailing 252-day history.
+**Dollar Volume = Close Price × Volume.** When institutions buy or sell an ETF in size,
+dollar volume spikes. This tab measures whether current dollar volume is unusually high
+or low relative to the trailing 1-year history.
 
-- **High positive Z (>1.5)** — Unusually strong dollar-volume surge → institutional inflow momentum
-- **High negative Z (<-1.5)** — Unusual volume collapse → outflow or distribution
-- **Relative Volume** — Today's dollar volume vs 21-day average (>1.5 = elevated activity)
+#### Flow Proxy Z-score
+Z-score of the 21-day dollar-volume change vs trailing 252-day history:
 
-*Note: Dollar volume = Close × Volume. Spikes coincide with news-driven ETF rebalancing.*
+| Z-score | Meaning |
+|---|---|
+| **> +1.5** | Unusual activity — likely institutional accumulation or rebalancing |
+| **0 to +1.5** | Mild positive momentum |
+| **−1.5 to 0** | Mild outflow or quiet period |
+| **< −1.5** | Volume has collapsed — distribution or institutional exit |
+
+#### The Heatmap (most useful view)
+Shows all ETFs × last 30 trading days at once:
+- **Sustained green column** (2+ weeks) → genuine accumulation trend, not a one-day spike
+- **Sustained red column** → persistent distribution — avoid or short
+- **Single-day spike** → likely news event, not a positioning signal
+
+#### Key distinction vs AUM
+- **Flow Proxy** measures *trading activity* — volume spikes
+- **AUM** measures *net capital* — whether money is actually staying in or leaving
+
+Both positive together = strong institutional accumulation signal.
+Flow Proxy positive + AUM falling = churning / distribution masquerading as activity.
+
+*Dollar volume = price × volume, so a big price move on normal volume looks the same as
+normal price on big volume. Best used alongside COT for confirmation.*
         """)
 
     if df_flow is None or df_flow.empty:
@@ -334,15 +402,33 @@ def _render_short_interest_section(df_short: pd.DataFrame):
     """Short interest ratio charts."""
     st.markdown("### 📉 Short Interest")
 
-    with st.expander("📘 How to read Short Interest signals", expanded=False):
+    with st.expander("📘 How to interpret Short Interest", expanded=False):
         st.markdown("""
-**Short Ratio** = Short volume / Total volume (FINRA data, reported twice monthly).
+**Short Ratio = Short Volume / Total Volume**, reported twice monthly by FINRA.
+A rising short ratio means more participants are actively betting against the ETF.
 
-- **Rising short ratio + falling price** — Bearish conviction, shorts increasing
-- **Rising short ratio + rising price** — Short squeeze setup 🚀
-- **Short Ratio Change (3-month)** — Positive = shorts being added (contrarian bullish if extreme), Negative = shorts covering
+#### Two ways to interpret a rising short ratio
 
-*Source: FINRA/Nasdaq Data Link (free tier) or FINRA direct API. Updated twice per month.*
+**Bearish read (trend-following):**
+Rising short ratio + falling price = shorts are right and momentum is down. Avoid or underweight.
+
+**Bullish read (contrarian — the short squeeze 🚀):**
+Rising short ratio + rising price = shorts are trapped and forced to cover, which
+accelerates the upward move. Mining ETFs (GDX, XME) are particularly prone to violent squeezes.
+
+#### 3-Month Short Ratio Change (primary signal)
+
+| Change | Interpretation |
+|---|---|
+| **> +10%** | Shorts building significantly — warning signal or future squeeze setup |
+| **−10% to +10%** | Stable positioning |
+| **< −10%** | Short covering underway — bearish conviction fading, often precedes rallies |
+
+#### Best squeeze setup
+High short ratio (>40%) + rising price + COT Index turning up from below 20
+= shorts are both covering *and* speculators are going long. Most powerful combination.
+
+*Data frequency: twice monthly from FINRA. Forward-filled to daily for composite score.*
         """)
 
     if df_short is None or df_short.empty:
@@ -351,10 +437,8 @@ def _render_short_interest_section(df_short: pd.DataFrame):
             "The seeding pipeline fetches this from FINRA (free, ~2yr history) "
             "or Nasdaq Data Link (longer history if `NASDAQ_API_KEY` is set).\n\n"
             "**Note:** `NASDAQ_API_KEY` must be added to **Streamlit Cloud secrets** "
-            "(not just GitHub Actions secrets) for this app to access it. "
-            "Go to: App → Settings → Secrets and add:\n"
-            "```\nNASDAQ_API_KEY = \"your_key_here\"\n```\n\n"
-            "Once seeded, this section will display short ratio trends."
+            "(not just GitHub Actions secrets). Go to: App → Settings → Secrets and add:\n"
+            "```\nNASDAQ_API_KEY = \"your_key_here\"\n```"
         )
         return
 
@@ -404,15 +488,36 @@ def _render_aum_section(df_aum: pd.DataFrame):
     """AUM flow charts."""
     st.markdown("### 🏦 AUM Flow (Assets Under Management)")
 
-    with st.expander("📘 How to read AUM signals", expanded=False):
+    with st.expander("📘 How to interpret AUM Flows", expanded=False):
         st.markdown("""
-**AUM Change %** = Percentage change in ETF total assets over 5 or 21 days.
+**AUM (Assets Under Management)** reflects total capital in the ETF. Daily changes
+combine two effects: market returns on existing holdings + net new flows (inflows minus redemptions).
 
-- **Positive AUM change** — Net inflows; institutional money entering the ETF
-- **Negative AUM change** — Net redemptions; money leaving the ETF
-- **Note:** AUM changes combine market returns AND flow effects. Price-adjusted flow = AUM change − return × prior AUM.
+#### 21-day AUM Change % (primary signal)
 
-*Source: yfinance totalAssets (daily snapshot). Historical values are accumulated over time by the daily pipeline.*
+| Change | Meaning |
+|---|---|
+| **Strongly positive** | New institutional capital actively flowing in — not just price appreciation |
+| **Near zero** | Stable base, price moves driven by existing holders |
+| **Strongly negative** | Redemptions outpacing inflows — institutional selling pressure |
+
+#### Reading AUM by ETF size
+- **Large ETFs (SPY, QQQ, GLD)** — move slowly; need large absolute changes to be significant.
+  A 1% AUM change in SPY represents ~$4B of real capital flow.
+- **Small ETFs (SLV, XME, XSD, XBI)** — dramatic % swings on smaller absolute amounts.
+  These are more actionable signals due to higher sensitivity.
+
+#### Key distinction vs Flow Proxy
+| Signal | Measures | Best for |
+|---|---|---|
+| **Flow Proxy** | Trading activity (volume spikes) | Detecting institutional *activity* |
+| **AUM Change** | Net capital retained in fund | Detecting whether money *stays* or *leaves* |
+
+**Strongest signal:** Both positive together = genuine accumulation (new money + active buying).
+**Warning signal:** High Flow Proxy Z but falling AUM = churning/distribution — big volume but
+money is actually leaving the fund.
+
+*Source: yfinance totalAssets daily snapshot, accumulated into history by the daily pipeline.*
         """)
 
     if df_aum is None or df_aum.empty:
@@ -485,6 +590,40 @@ def _render_deep_dive(df_comp: pd.DataFrame, df_cot: pd.DataFrame,
     """Single-ETF deep-dive showing all four signals on one chart."""
     st.markdown("### 🔍 Single-ETF Signal Deep-Dive")
 
+    with st.expander("📘 How to use the Signal Deep-Dive", expanded=False):
+        st.markdown("""
+All four signals stacked on one chart for a single ETF, sharing the same time axis.
+Use this to **confirm or question a top composite ranking** before acting on it.
+
+#### What to look for: Signal Confluence
+
+The strongest setups occur when multiple signals align simultaneously:
+
+| Signal | Bullish Setup | Bearish Setup |
+|---|---|---|
+| **COT Index** | Turning up from below 20 (shorts squeezed) | Turning down from above 80 (longs crowded) |
+| **Flow Proxy Z** | Positive and rising (volume momentum building) | Negative and falling (outflow) |
+| **Short Ratio** | Falling (shorts covering) | Rising sharply |
+| **AUM Change** | Positive (capital flowing in) | Negative (redemptions) |
+
+**High conviction:** 3 or 4 signals aligned = trade with full size.
+**Low conviction:** Only 1–2 signals positive = wait for confirmation or reduce size.
+
+#### The highest-conviction setup (commodities ETFs: GLD, SLV, GDX)
+1. COT Index at a low extreme (< 20) — speculators maximally short
+2. Flow Proxy Z-score starting to turn positive — volume picking up
+3. AUM change turning positive — new capital entering
+
+This combination historically precedes sustained multi-week moves in commodity ETFs.
+
+#### Why signals sometimes disagree
+- **Flow Proxy up + COT down:** Trading activity is high but futures speculators are
+  still bearish — could be retail buying into institutional distribution. Caution.
+- **COT up + AUM flat:** Futures positioning is bullish but ETF investors haven't
+  followed yet — early signal, watch for AUM to confirm.
+- **All signals neutral:** No edge — sit on the sidelines for this ETF.
+        """)
+
     all_etfs = sorted(cfg.ALL_TICKERS)
     sel_etf  = st.selectbox("Select ETF", all_etfs, key="deepdive_etf")
     lookback = st.slider("History (days)", 60, 730, 252, key="deepdive_lookback")
@@ -518,7 +657,6 @@ def _render_deep_dive(df_comp: pd.DataFrame, df_cot: pd.DataFrame,
         return
 
     merged = pd.concat(frames.values(), axis=1).reset_index()
-    # reset_index names the date column "index" or "date" depending on pandas version
     if "index" in merged.columns and "date" not in merged.columns:
         merged = merged.rename(columns={"index": "date"})
 
