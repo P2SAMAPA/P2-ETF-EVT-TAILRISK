@@ -465,20 +465,55 @@ def build_short_interest_dataset() -> pd.DataFrame:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _fetch_aum_snapshot() -> pd.DataFrame:
-    """Fetch today's AUM for all tickers via yfinance."""
+    """
+    Fetch AUM for all tickers via yfinance, trying multiple methods.
+
+    Method 1: fast_info.total_assets  (fastest, sometimes None on weekends)
+    Method 2: .info[totalAssets]      (slower, more reliable)
+    Method 3: price x shares_outstanding proxy from recent OHLCV
+              (fallback for weekends / when yfinance returns None)
+    """
     rows = []
     for ticker in cfg.ALL_TICKERS:
+        aum = None
         try:
+            # Method 1: fast_info
             fi = yf.Ticker(ticker).fast_info
             aum = getattr(fi, "total_assets", None)
-            if aum is None:
-                aum = yf.Ticker(ticker).info.get("totalAssets", None)
-            if aum and float(aum) > 0:
-                rows.append({"date": pd.Timestamp(cfg.TODAY), "etf": ticker, "aum": float(aum)})
-                log.info(f"  {ticker}: ${float(aum)/1e9:.2f}B")
+            if aum:
+                aum = float(aum)
+
+            # Method 2: full .info dict
+            if not aum or aum <= 0:
+                try:
+                    info = yf.Ticker(ticker).info
+                    v = info.get("totalAssets") or info.get("netAssets")
+                    if v:
+                        aum = float(v)
+                except Exception:
+                    pass
+
+            # Method 3: price x shares_outstanding proxy (works on weekends)
+            if not aum or aum <= 0:
+                try:
+                    t = yf.Ticker(ticker)
+                    shares = getattr(t.fast_info, "shares", None)
+                    if shares is None:
+                        shares = t.info.get("sharesOutstanding")
+                    hist = t.history(period="5d", auto_adjust=True)
+                    if not hist.empty and shares and float(shares) > 0:
+                        last_close = float(hist["Close"].iloc[-1])
+                        aum = last_close * float(shares)
+                        log.info(f"  {ticker}: proxy AUM (price x shares) = ${aum/1e9:.2f}B")
+                except Exception:
+                    pass
+
+            if aum and aum > 0:
+                rows.append({"date": pd.Timestamp(cfg.TODAY), "etf": ticker, "aum": aum})
+                log.info(f"  {ticker}: ${aum/1e9:.2f}B")
             else:
-                log.warning(f"  {ticker}: AUM not available")
-            time.sleep(0.2)
+                log.warning(f"  {ticker}: AUM not available via any method")
+            time.sleep(0.3)
         except Exception as e:
             log.warning(f"  {ticker}: {e}")
     return pd.DataFrame(rows)
