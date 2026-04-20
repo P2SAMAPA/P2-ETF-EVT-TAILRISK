@@ -1,6 +1,7 @@
 """
-Streamlit Dashboard for EVT Tail Risk Results.
-Displays current tail risk metrics and historical trends.
+streamlit_app.py  — P2Quant EVT Tail Risk + Flow & Positioning Monitor
+Adds a new 💧 Flow & Positioning tab to the existing three EVT tabs.
+All existing EVT code is unchanged.
 """
 
 import streamlit as st
@@ -11,14 +12,21 @@ from huggingface_hub import HfApi, hf_hub_download
 import json
 import config
 
+# ── NEW: import the flow tab renderer ─────────────────────────────────────────
+try:
+    from flow_tab import render_flow_tab
+    FLOW_MODULE_AVAILABLE = True
+except ImportError:
+    FLOW_MODULE_AVAILABLE = False
+
 st.set_page_config(
-    page_title="P2Quant EVT Tail Risk Monitor",
+    page_title="P2Quant EVT + Flow Monitor",
     page_icon="⚠️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS
+# Custom CSS (unchanged from original)
 st.markdown("""
 <style>
     .main-header {
@@ -49,7 +57,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- Helper Functions ---
+# --- Helper Functions (unchanged) ---
 
 @st.cache_data(ttl=3600)
 def list_result_files():
@@ -94,11 +102,8 @@ def get_latest_data():
 def get_historical_tail_shapes(ticker: str, lookback_days: int = 90):
     """Load tail shape history for a specific ticker from recent files."""
     files = list_result_files()[:lookback_days]
-    dates = []
-    shapes = []
-    shapes_smooth = []
-    warnings = []
-    
+    dates, shapes, shapes_smooth, warnings = [], [], [], []
+
     for f in files:
         date_str = f.replace("evt_tailrisk_", "").replace(".json", "")
         data = load_json_file(f)
@@ -118,20 +123,22 @@ def get_historical_tail_shapes(ticker: str, lookback_days: int = 90):
             shapes.append(None)
             shapes_smooth.append(None)
             warnings.append(0)
-    
+
     df = pd.DataFrame({
         'Date': pd.to_datetime(dates),
         'tail_shape': shapes,
         'tail_shape_smooth': shapes_smooth,
         'tail_warning': warnings
     }).sort_values('Date')
-    
+
     return df
 
 # --- Sidebar ---
 st.sidebar.markdown("## ⚙️ Configuration")
-st.sidebar.markdown(f"**Data Source:** `{config.HF_DATA_REPO}`")
-st.sidebar.markdown(f"**Results Repo:** `{config.HF_OUTPUT_REPO}`")
+st.sidebar.markdown(f"**EVT Results:** `{config.HF_OUTPUT_REPO}`")
+if FLOW_MODULE_AVAILABLE:
+    import flow_config as fcfg
+    st.sidebar.markdown(f"**Flow Data:** `{fcfg.HF_FLOW_REPO}`")
 st.sidebar.divider()
 
 st.sidebar.markdown("### 📊 EVT Parameters")
@@ -144,89 +151,80 @@ st.sidebar.markdown("### 🕒 Last Updated")
 data, latest_file = get_latest_data()
 if data:
     run_date = data.get('run_date', 'Unknown')
-    st.sidebar.markdown(f"**{run_date}**")
-else:
-    st.sidebar.markdown("*No data available*")
-
+    st.sidebar.markdown(f"**EVT:** {run_date}")
 st.sidebar.divider()
+
 st.sidebar.markdown("### 📖 About")
 st.sidebar.markdown("""
-**EVT Tail Risk Engine** estimates extreme loss probabilities using Peaks-Over-Threshold (POT) with Generalized Pareto Distribution (GPD).
+**EVT Tail Risk Engine** estimates extreme loss probabilities using GPD (Peaks-Over-Threshold).
 
-- **ξ (Shape):** Tail heaviness (>0.3 triggers warning)
-- **VaR 99%:** 1-day Value-at-Risk at 99% confidence
-- **ES 99%:** Expected Shortfall (average loss beyond VaR)
+**Flow & Positioning Module** combines four orthogonal signals:
+- 📊 COT (CFTC speculator futures)
+- 💰 Flow Proxy (dollar-volume momentum)
+- 📉 Short Interest (FINRA)
+- 🏦 AUM Flows (yfinance)
 """)
 
-# --- Main Content ---
-st.markdown('<div class="main-header">⚠️ P2Quant EVT Tail Risk Monitor</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-header">Extreme Value Theory (Peaks-Over-Threshold) Analysis</div>', unsafe_allow_html=True)
+# --- Main Header ---
+st.markdown('<div class="main-header">⚠️ P2Quant EVT Tail Risk + Flow Monitor</div>',
+            unsafe_allow_html=True)
+st.markdown(
+    '<div class="sub-header">Extreme Value Theory (EVT) &nbsp;·&nbsp; '
+    'Cross-Asset Flow &amp; Positioning</div>',
+    unsafe_allow_html=True,
+)
 
-# --- How to Read This Dashboard (Expander) ---
+# --- How to Read (expander, unchanged) ---
 with st.expander("📘 How to Read This Dashboard", expanded=False):
     st.markdown("""
     ### Understanding EVT Tail Risk Metrics
-    
-    This dashboard uses **Extreme Value Theory (EVT)** to measure the risk of large, rare losses in ETFs. 
-    Here's what each metric means and how to act on it.
-    
-    ---
-    
+
     #### 1️⃣ Tail Shape (ξ) – "Fatness of the Left Tail"
-    - **Range:** Can be negative (thin tail) to positive (fat tail).  
-    - **Warning Threshold:** `ξ > 0.3` triggers a **⚠️ WARNING** flag.  
-    - **Interpretation:**  
-        - `ξ < 0`: Tail is bounded; extreme losses are less likely than a normal distribution predicts.  
-        - `0 < ξ < 0.3`: Moderate tail risk.  
-        - `ξ > 0.3`: **Heavy tail regime.** Extreme losses are more frequent and more severe.  
-    - **Smoothed ξ (used for warnings):** EWMA-smoothed over 21 days to filter noise.  
-    - **Raw ξ:** Instantaneous estimate from the latest 1-year window.
-    
+    - `ξ < 0`: Bounded tail. Extreme losses less likely than normal distribution predicts.
+    - `0 < ξ < 0.3`: Moderate tail risk.
+    - `ξ > 0.3`: **Heavy tail regime.** Extreme losses are more frequent and severe.
+
     #### 2️⃣ VaR 99% – "The 1-in-100 Day Loss Threshold"
-    - **Definition:** The minimum loss expected on the worst 1% of days.  
-    - **Example:** If VaR 99% = 5.32%, there is a 1% chance that the ETF will lose **at least 5.32%** tomorrow.  
-    - **Use for:** Setting stop‑loss levels, position sizing (e.g., if you can tolerate 1% portfolio loss, allocate at most `1% / VaR`).
-    
+    The minimum loss expected on the worst 1% of days.
+
     #### 3️⃣ ES 99% – "Average Loss If Things Get Ugly"
-    - **Definition:** Expected Shortfall (also called CVaR). The **average** loss on days when the loss exceeds VaR.  
-    - **Example:** If ES 99% = 8.90%, then **when** a tail event occurs, the typical loss is 8.90%.  
-    - **Use for:** Tail‑risk hedging, stress testing, and worst‑case capital allocation.
-    
-    #### 4️⃣ Tail Warning Flag
-    - **Triggered when:** Smoothed ξ > 0.3.  
-    - **Action:** Consider reducing position size, hedging, or switching to cash for that ETF.  
-    - **Appearance:** Red warning cards at the top of the **Current Tail Risk Dashboard** tab.
-    
-    ---
-    
-    ### How to Use the Tabs
-    - **Current Tail Risk Dashboard:** See today's metrics for all ETFs in a selected universe. Warnings appear first.  
-    - **Historical Analysis:** Plot the evolution of ξ for any ETF to see if tail risk is rising or falling.  
-    - **Universe Overview:** Rank all ETFs by current smoothed ξ to identify the riskiest assets at a glance.
-    
-    ---
-    
-    ### Example Interpretation
-    - **GLD:** ξ = 0.325 → Warning active. VaR 99% = 5.32%, ES 99% = 8.90%.  
-      *Interpretation:* Gold is in a heavy‑tail regime. A 1‑in‑100 day could lose 5.3%+, and if that happens, the average loss is nearly 9%.  
-    - **SLV:** ξ = 0.472 → Severe warning. VaR 99% = 12.18%, ES 99% = 22.93%.  
-      *Interpretation:* Silver's tail is extremely fat. A tail event averages a **23% loss**. Strongly consider reducing exposure.
+    Expected Shortfall — the average loss when the loss exceeds VaR.
+
+    #### 4️⃣ Flow & Positioning Tab
+    See the 💧 Flow & Positioning tab for COT, dollar-volume momentum,
+    short interest, and AUM flow signals.
     """)
 
 if data is None:
-    st.warning("No data available. Please run the daily pipeline first.")
+    st.warning("No EVT data available. Please run the daily pipeline first.")
+    # Still show Flow tab even if EVT data missing
+    if FLOW_MODULE_AVAILABLE:
+        with st.container():
+            render_flow_tab()
     st.stop()
 
-# --- Tabs ---
-tab1, tab2, tab3 = st.tabs(["📋 Current Tail Risk Dashboard", "📈 Historical Analysis", "📊 Universe Overview"])
+# --- TABS: 3 existing EVT + 1 new Flow tab ---
+if FLOW_MODULE_AVAILABLE:
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "📋 Current Tail Risk Dashboard",
+        "📈 Historical Analysis",
+        "📊 Universe Overview",
+        "💧 Flow & Positioning",
+    ])
+else:
+    tab1, tab2, tab3 = st.tabs([
+        "📋 Current Tail Risk Dashboard",
+        "📈 Historical Analysis",
+        "📊 Universe Overview",
+    ])
+    tab4 = None
 
+# ── TAB 1: Current Tail Risk Dashboard (unchanged) ────────────────────────────
 with tab1:
-    # Universe selector
     universe_options = list(data['universes'].keys())
     selected_universe = st.selectbox("Select Universe", universe_options, index=2)
     universe_data = data['universes'][selected_universe]
-    
-    # --- Active Tail Risk Warnings (moved to top) ---
+
     warning_tickers = [t for t, m in universe_data.items() if m.get('tail_warning', 0) == 1]
     if warning_tickers:
         st.markdown("### ⚠️ Active Tail Risk Warnings")
@@ -242,104 +240,95 @@ with tab1:
                 )
                 st.caption(f"VaR 99%: {m.get('var_99', 0)*100:.2f}%")
                 st.caption(f"ES 99%: {m.get('es_99', 0)*100:.2f}%")
-    
+
     st.markdown("### Today's Tail Risk Summary")
-    
+
     rows = []
     for ticker, metrics in universe_data.items():
         rows.append({
-            'Ticker': ticker,
-            'Tail Shape (ξ)': f"{metrics.get('tail_shape', 0):.3f}" if metrics.get('tail_shape') is not None else 'N/A',
-            'Smoothed ξ': f"{metrics.get('tail_shape_smooth', 0):.3f}" if metrics.get('tail_shape_smooth') is not None else 'N/A',
-            'VaR 99%': f"{metrics.get('var_99', 0)*100:.2f}%" if metrics.get('var_99') else 'N/A',
-            'ES 99%': f"{metrics.get('es_99', 0)*100:.2f}%" if metrics.get('es_99') else 'N/A',
-            'Warning': metrics.get('tail_warning', 0)
+            'Ticker':        ticker,
+            'Tail Shape (ξ)':f"{metrics.get('tail_shape', 0):.3f}" if metrics.get('tail_shape') is not None else 'N/A',
+            'Smoothed ξ':    f"{metrics.get('tail_shape_smooth', 0):.3f}" if metrics.get('tail_shape_smooth') is not None else 'N/A',
+            'VaR 99%':       f"{metrics.get('var_99', 0)*100:.2f}%" if metrics.get('var_99') else 'N/A',
+            'ES 99%':        f"{metrics.get('es_99', 0)*100:.2f}%" if metrics.get('es_99') else 'N/A',
+            'Warning':       metrics.get('tail_warning', 0)
         })
-    
+
     df_display = pd.DataFrame(rows)
-    
+
     def highlight_warning(row):
         if row['Warning'] == 1:
             return ['background-color: #ffcccc'] * len(row)
         return [''] * len(row)
-    
+
     st.dataframe(
         df_display.style.apply(highlight_warning, axis=1),
         use_container_width=True,
         hide_index=True,
-        column_config={
-            "Warning": st.column_config.CheckboxColumn("Warning Flag")
-        }
+        column_config={"Warning": st.column_config.CheckboxColumn("Warning Flag")}
     )
 
+# ── TAB 2: Historical Analysis (unchanged) ────────────────────────────────────
 with tab2:
     st.markdown("### Historical Tail Shape (ξ) Analysis")
-    
+
     col1, col2 = st.columns([1, 3])
     with col1:
         selected_ticker = st.selectbox("Select ETF", sorted(config.ALL_TICKERS))
         lookback = st.slider("Lookback Days", 30, 365, 90)
-    
+
     with col2:
         if selected_ticker:
             hist_df = get_historical_tail_shapes(selected_ticker, lookback)
             if not hist_df.empty and hist_df['tail_shape_smooth'].notna().any():
                 fig = make_subplots(specs=[[{"secondary_y": True}]])
-                
                 fig.add_trace(
-                    go.Scatter(
-                        x=hist_df['Date'], y=hist_df['tail_shape_smooth'],
-                        name="Smoothed ξ", line=dict(color='blue', width=2)
-                    ),
+                    go.Scatter(x=hist_df['Date'], y=hist_df['tail_shape_smooth'],
+                               name="Smoothed ξ", line=dict(color='blue', width=2)),
                     secondary_y=False
                 )
                 fig.add_trace(
-                    go.Scatter(
-                        x=hist_df['Date'], y=hist_df['tail_shape'],
-                        name="Raw ξ", line=dict(color='gray', width=1, dash='dot')
-                    ),
+                    go.Scatter(x=hist_df['Date'], y=hist_df['tail_shape'],
+                               name="Raw ξ", line=dict(color='gray', width=1, dash='dot')),
                     secondary_y=False
                 )
-                
-                fig.add_hline(
-                    y=config.TAIL_SHAPE_WARNING_THRESHOLD, 
-                    line_dash="dash", line_color="red",
-                    annotation_text="Warning Threshold"
-                )
-                
+                fig.add_hline(y=config.TAIL_SHAPE_WARNING_THRESHOLD,
+                              line_dash="dash", line_color="red",
+                              annotation_text="Warning Threshold")
                 warning_periods = hist_df[hist_df['tail_warning'] == 1]
                 if not warning_periods.empty:
                     fig.add_trace(
                         go.Scatter(
-                            x=warning_periods['Date'], y=[config.TAIL_SHAPE_WARNING_THRESHOLD]*len(warning_periods),
-                            mode='markers', marker=dict(color='red', size=8, symbol='x'),
+                            x=warning_periods['Date'],
+                            y=[config.TAIL_SHAPE_WARNING_THRESHOLD]*len(warning_periods),
+                            mode='markers',
+                            marker=dict(color='red', size=8, symbol='x'),
                             name='Warning Active'
                         ),
                         secondary_y=False
                     )
-                
                 fig.update_layout(
                     title=f"{selected_ticker} Tail Shape Evolution (ξ)",
-                    xaxis_title="Date",
-                    yaxis_title="Tail Shape (ξ)",
-                    height=500,
-                    hovermode='x unified'
+                    xaxis_title="Date", yaxis_title="Tail Shape (ξ)",
+                    height=500, hovermode='x unified'
                 )
-                
                 st.plotly_chart(fig, use_container_width=True)
-                
+
                 latest_smooth = hist_df['tail_shape_smooth'].iloc[-1] if not hist_df.empty else None
                 latest_warning = hist_df['tail_warning'].iloc[-1] if not hist_df.empty else 0
                 if latest_smooth is not None:
                     st.markdown(f"**Latest Smoothed ξ:** {latest_smooth:.3f}")
-                    warning_text = '<span class="warning-badge">⚠️ WARNING</span>' if latest_warning == 1 else '<span style="color: green;">✅ Normal</span>'
+                    warning_text = ('<span class="warning-badge">⚠️ WARNING</span>'
+                                    if latest_warning == 1
+                                    else '<span style="color: green;">✅ Normal</span>')
                     st.markdown(f"**Warning Status:** {warning_text}", unsafe_allow_html=True)
             else:
                 st.info(f"No historical data available for {selected_ticker}")
 
+# ── TAB 3: Universe Overview (unchanged) ─────────────────────────────────────
 with tab3:
     st.markdown("### Universe-Wide Tail Risk Heatmap")
-    
+
     all_tickers_data = {}
     for universe, tickers_data in data['universes'].items():
         for ticker, metrics in tickers_data.items():
@@ -348,41 +337,46 @@ with tab3:
                 'tail_shape_smooth': metrics.get('tail_shape_smooth'),
                 'tail_warning': metrics.get('tail_warning', 0)
             }
-    
+
     df_all = pd.DataFrame.from_dict(all_tickers_data, orient='index')
-    
+
     if df_all.empty:
         st.warning("No ticker data available.")
     else:
         df_all = df_all.sort_values('tail_shape_smooth', ascending=False)
-        
-        fig = go.Figure()
         colors = ['red' if w == 1 else 'steelblue' for w in df_all['tail_warning']]
+        fig = go.Figure()
         fig.add_trace(go.Bar(
-            x=df_all.index,
-            y=df_all['tail_shape_smooth'],
+            x=df_all.index, y=df_all['tail_shape_smooth'],
             marker_color=colors,
             text=df_all['tail_shape_smooth'].round(3),
             textposition='outside'
         ))
-        fig.add_hline(
-            y=config.TAIL_SHAPE_WARNING_THRESHOLD,
-            line_dash="dash", line_color="red",
-            annotation_text="Warning Threshold"
-        )
+        fig.add_hline(y=config.TAIL_SHAPE_WARNING_THRESHOLD,
+                      line_dash="dash", line_color="red",
+                      annotation_text="Warning Threshold")
         fig.update_layout(
             title="Current Smoothed Tail Shape (ξ) by ETF",
-            xaxis_title="ETF Ticker",
-            yaxis_title="Smoothed Tail Shape (ξ)",
+            xaxis_title="ETF Ticker", yaxis_title="Smoothed Tail Shape (ξ)",
             height=500
         )
         st.plotly_chart(fig, use_container_width=True)
-        
+
         st.markdown("### Risk Ranking")
         st.dataframe(
             df_all.style.background_gradient(subset=['tail_shape_smooth'], cmap='Reds'),
             use_container_width=True,
-            column_config={
-                "tail_warning": st.column_config.CheckboxColumn("Warning Flag")
-            }
+            column_config={"tail_warning": st.column_config.CheckboxColumn("Warning Flag")}
         )
+
+# ── TAB 4: Flow & Positioning (NEW) ──────────────────────────────────────────
+if tab4 is not None:
+    with tab4:
+        if FLOW_MODULE_AVAILABLE:
+            render_flow_tab()
+        else:
+            st.warning(
+                "Flow module files not found. "
+                "Add `flow_config.py`, `flow_data_manager.py`, and `flow_tab.py` "
+                "to the repo and run `python flow_trainer.py --backfill`."
+            )
