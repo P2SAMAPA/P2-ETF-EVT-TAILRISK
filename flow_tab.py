@@ -125,19 +125,31 @@ def _render_composite_dashboard(payload: dict):
 
     df = pd.DataFrame(rows).sort_values("Composite Score", ascending=False)
 
-    def _color_score(val):
-        if not isinstance(val, (int, float)):
-            return ""
-        if val > 0.5:
-            return "background-color: #c8e6c9"
-        if val < -0.5:
-            return "background-color: #ffcdd2"
-        return "background-color: #fff9c4"
+    # Add a simple direction indicator column instead of cell styling
+    # (avoids pandas Styler API version issues on Streamlit Cloud)
+    def _score_indicator(val):
+        try:
+            v = float(val)
+            if v > 0.5:  return "🟢"
+            if v < -0.5: return "🔴"
+            return "🟡"
+        except (TypeError, ValueError):
+            return "⚪"
+
+    df["Signal"] = df["Composite Score"].apply(_score_indicator)
 
     st.dataframe(
-        df.style.map(_color_score, subset=["Composite Score"]),
+        df,
         use_container_width=True,
         hide_index=True,
+        column_config={
+            "Signal": st.column_config.TextColumn("", width="small"),
+            "Composite Score": st.column_config.NumberColumn(format="%.3f"),
+            "COT Z": st.column_config.NumberColumn(format="%.3f"),
+            "Flow Proxy Z": st.column_config.NumberColumn(format="%.3f"),
+            "Short Ratio Chg Z": st.column_config.NumberColumn(format="%.3f"),
+            "AUM Change Z": st.column_config.NumberColumn(format="%.3f"),
+        }
     )
 
     signal_date = payload.get("signal_date", "—")
