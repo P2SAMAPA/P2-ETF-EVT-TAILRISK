@@ -58,7 +58,7 @@ def main():
     if not args.skip_cot:
         log.info("\n[1/5] Downloading CFTC COT data (2008–present)...")
         log.info("  Downloading ~17 annual zip files from www.cftc.gov")
-        df_cot = dm.build_cot_dataset(start_year=2008)
+        df_cot = dm.build_cot_dataset()
         if df_cot is not None and not df_cot.empty:
             dm._push_parquet(df_cot, cfg.HF_FILES["cot"], "Seed: COT positioning 2008-present")
             log.info(f"  ✅ COT seeded: {len(df_cot):,} rows, {df_cot['etf'].nunique()} ETFs")
