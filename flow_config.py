@@ -60,12 +60,13 @@ COT_MARKET_MAP = {
 
 # COT signal parameters
 COT_LOOKBACK_WEEKS  = 52   # Rolling window for COT Index percentile (52-week norm)
+
+# ─── UPDATED: Correct column names for CFTC disaggregated CSV ─────────────────
 COT_COLUMNS = {
-    # Column names in CFTC disaggregated CSV (large spec net = longs - shorts)
-    "long":  "Lev_Money_Positions_Long_All",
-    "short": "Lev_Money_Positions_Short_All",
-    "market":"Market_and_Exchange_Names",
-    "date":  "As_of_Date_In_Form_YYMMDD",
+    "market": "Market_and_Exchange_Names",
+    "date":   "Report_Date_as_YYYY-MM-DD",
+    "long":   "Lev_Money_Positions_Long_All",
+    "short":  "Lev_Money_Positions_Short_All",
 }
 
 # ── Flow Proxy (yfinance dollar-volume momentum) ──────────────────────────────
