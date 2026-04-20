@@ -1,0 +1,32 @@
+name: Fix AUM — Backfill from Flow Proxy (run once)
+
+on:
+  workflow_dispatch:   # Manual trigger only — click "Run workflow" in Actions tab
+
+jobs:
+  fix-aum:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run AUM backfill
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python fix_aum_from_flowproxy.py
+
+      - name: Recompute composite scores with fixed AUM
+        env:
+          HF_TOKEN:       ${{ secrets.HF_TOKEN }}
+          NASDAQ_API_KEY: ${{ secrets.NASDAQ_API_KEY }}
+        run: python flow_seed.py --skip-cot --skip-flow --skip-short --skip-aum
