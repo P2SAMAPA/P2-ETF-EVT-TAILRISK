@@ -346,8 +346,16 @@ def _render_short_interest_section(df_short: pd.DataFrame):
         """)
 
     if df_short is None or df_short.empty:
-        st.warning("Short interest data not yet available. Requires NASDAQ_API_KEY secret "
-                   "or FINRA direct API (last ~2 years only).")
+        st.info(
+            "**Short interest data not yet seeded.**\n\n"
+            "The seeding pipeline fetches this from FINRA (free, ~2yr history) "
+            "or Nasdaq Data Link (longer history if `NASDAQ_API_KEY` is set).\n\n"
+            "**Note:** `NASDAQ_API_KEY` must be added to **Streamlit Cloud secrets** "
+            "(not just GitHub Actions secrets) for this app to access it. "
+            "Go to: App → Settings → Secrets and add:\n"
+            "```\nNASDAQ_API_KEY = \"your_key_here\"\n```\n\n"
+            "Once seeded, this section will display short ratio trends."
+        )
         return
 
     df_short["date"] = pd.to_datetime(df_short["date"])
@@ -510,6 +518,9 @@ def _render_deep_dive(df_comp: pd.DataFrame, df_cot: pd.DataFrame,
         return
 
     merged = pd.concat(frames.values(), axis=1).reset_index()
+    # reset_index names the date column "index" or "date" depending on pandas version
+    if "index" in merged.columns and "date" not in merged.columns:
+        merged = merged.rename(columns={"index": "date"})
 
     from plotly.subplots import make_subplots
     n_plots = len(frames)
@@ -536,7 +547,7 @@ def _render_deep_dive(df_comp: pd.DataFrame, df_cot: pd.DataFrame,
             continue
         y = merged[col_name] * (100 if col_name in ("short_ratio", "aum_chg_21d") else 1)
         fig.add_trace(
-            go.Scatter(x=merged["index"], y=y, name=label,
+            go.Scatter(x=merged["date"], y=y, name=label,
                        line=dict(color=color, width=1.8)),
             row=row, col=1,
         )
